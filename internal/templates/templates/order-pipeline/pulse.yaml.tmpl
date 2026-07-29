@@ -1,0 +1,42 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  api:
+    runtime: nodejs20.x
+    handler: src/api.handler
+    codeDir: services/api
+    timeout: 10
+    memory: 256
+    env:
+      TABLE_NAME: orders
+      QUEUE_NAME: order-events
+  worker:
+    runtime: python3.12
+    handler: handler.process
+    codeDir: services/worker
+    timeout: 30
+
+triggers:
+  - type: http
+    method: POST
+    path: /orders
+    function: api
+  - type: http
+    method: GET
+    path: /orders/{id}
+    function: api
+  - type: sqs
+    queue: order-events
+    function: worker
+    batchSize: 10
+
+resources:
+  tables:
+    orders:
+      pk: { name: id, type: S }
+  queues:
+    order-events:
+      dlq: order-events-dlq
+      maxReceiveCount: 3
+    order-events-dlq: {}

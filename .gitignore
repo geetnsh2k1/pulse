@@ -1,0 +1,13 @@
+# build artifacts
+bin/
+dist/
+
+# local engine state (created inside example/demo projects)
+.pulse/
+
+# OS noise
+.DS_Store
+
+# editor
+.idea/
+.vscode/

@@ -1,0 +1,15 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  hello:
+    runtime: python3.12
+    handler: handler.handler
+    codeDir: functions/hello
+    timeout: 5
+
+triggers:
+  - type: http
+    method: GET
+    path: /hello
+    function: hello

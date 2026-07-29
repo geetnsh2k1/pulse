@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /orders",
+  "rawPath": "/orders",
+  "requestContext": { "http": { "method": "POST", "path": "/orders" } },
+  "body": "{\"sku\":\"A1\",\"qty\":2}",
+  "isBase64Encoded": false
+}
