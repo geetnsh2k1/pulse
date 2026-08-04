@@ -26,16 +26,21 @@ import (
 var shimsFS embed.FS
 
 type Manager struct {
-	cfg      *config.Config
-	st       *store.Store
-	sink     *logs.Sink
-	pools    map[string]*pool
-	warnings []string
+	cfg         *config.Config
+	st          *store.Store
+	sink        *logs.Sink
+	pools       map[string]*pool
+	warnings    []string
+	awsEndpoint string
 }
 
 func NewManager(cfg *config.Config, st *store.Store, sink *logs.Sink) *Manager {
 	return &Manager{cfg: cfg, st: st, sink: sink, pools: map[string]*pool{}}
 }
+
+// SetAWSEndpoint points workers' AWS SDKs at the local façade (must be
+// called before Start). Empty means no injection.
+func (m *Manager) SetAWSEndpoint(url string) { m.awsEndpoint = url }
 
 // Start materializes the bootstrap shims into .pulse/runtime/shims and
 // brings up one runtime-API listener per function. Worker processes spawn
@@ -49,15 +54,19 @@ func (m *Manager) Start() error {
 	seenWarnings := map[string]bool{}
 	for _, name := range m.cfg.FunctionNames() {
 		p := newPool(m.cfg.Functions[name], m.cfg, m.sink, shimDir)
+		p.awsEndpoint = m.awsEndpoint
 		if err := p.start(); err != nil {
 			m.Shutdown()
 			return err
 		}
 		if p.rbErr != nil {
 			m.warnings = append(m.warnings, fmt.Sprintf("%s: %v (invocations will fail until fixed)", name, p.rbErr))
-		} else if p.warn != "" && !seenWarnings[p.warn] {
-			seenWarnings[p.warn] = true
-			m.warnings = append(m.warnings, p.warn)
+		}
+		for _, note := range p.rbNotes {
+			if !seenWarnings[note] {
+				seenWarnings[note] = true
+				m.warnings = append(m.warnings, note)
+			}
 		}
 		m.pools[name] = p
 	}
@@ -92,6 +101,13 @@ func (m *Manager) Warnings() []string { return m.warnings }
 // exactly the log lines that request produced. Every invocation is recorded
 // in the store (and its event payload kept for phase-5 replay).
 func (m *Manager) Invoke(ctx context.Context, function, source string, payload []byte) (*Result, error) {
+	return m.InvokeAs(ctx, uuid.NewString(), function, source, payload)
+}
+
+// InvokeAs is Invoke with a caller-chosen request id, so trigger frontends
+// (the HTTP gateway, later the SQS poller) can stamp the same id into the
+// event they build and into the invocation record.
+func (m *Manager) InvokeAs(ctx context.Context, id, function, source string, payload []byte) (*Result, error) {
 	p, ok := m.pools[function]
 	if !ok {
 		known := strings.Join(m.cfg.FunctionNames(), ", ")
@@ -101,7 +117,6 @@ func (m *Manager) Invoke(ctx context.Context, function, source string, payload [
 		payload = []byte("{}")
 	}
 
-	id := uuid.NewString()
 	now := time.Now()
 	_ = m.st.StartInvocation(id, function, source, payload, now.UnixMilli())
 	_ = m.st.RecordEvent(id, source, source, function, payload, now.UnixMilli())

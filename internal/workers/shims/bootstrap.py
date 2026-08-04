@@ -7,11 +7,17 @@ _HANDLER, LAMBDA_TASK_ROOT, AWS_LAMBDA_RUNTIME_API.
 import importlib
 import json
 import os
+import signal
 import sys
 import time
 import traceback
 import urllib.error
 import urllib.request
+
+# Ctrl+C in the `pulse start` terminal reaches workers too; die quietly
+# instead of spraying a KeyboardInterrupt traceback into the logs.
+signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
 
 BASE = f"http://{os.environ['AWS_LAMBDA_RUNTIME_API']}/2018-06-01/runtime"
 WORKER_ID = os.environ.get("PULSE_WORKER_ID", "w0")

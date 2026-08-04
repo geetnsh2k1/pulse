@@ -321,6 +321,83 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-07-30 — DX hardening pass (Geetansh's "make it feel easy" directive)
+  complete.** Fresh-eyes audit confirmed the friction; all of it fixed and
+  live-verified: (1) **zero-setup init** — `pulse init` now installs
+  dependencies automatically (npm, or a python .venv + requirements.txt;
+  `--no-install` opt-out; offline degrades to a note) and prints the real
+  money-path next steps; (2) **venv auto-detection** — workers resolve
+  `.venv/bin/python*` on their own, activation is never needed again;
+  (3) **pulse.yaml hot-apply** — the engine validates and swaps subsystems
+  live on save, rejects invalid configs with the full problem list, rolls
+  back on apply failure (engine test covers both paths); (4) **`pulse add`
+  function/route/queue/table** — surgical yaml.Node edits (comments survive,
+  results validated-or-reverted), commented starter handlers, live apply;
+  (5) **schema flexibility** — `pk: id` shorthand (type defaults S), queues
+  auto-create on first send with a console note, DynamoDB table-not-found
+  errors teach the exact yaml snippet; resources stay fully optional;
+  (6) **teaching templates** — comment-rich starters, de-staled hello
+  READMEs, python requirements.txt at project root, `pk: id` in the demo.
+  New journey verified end to end: init(2.9s incl. deps) → start → golden
+  loop → `pulse add` × 3 against the running engine → new route + queue
+  live without restart. One Go gotcha fixed en route (exec resolves relative
+  binary paths against cmd.Dir). Next: **Phase 5 — Inspect Everything**.
+
+- **2026-07-29 — Phase 4 (Persist Data) complete: THE GOLDEN WORKFLOW IS
+  DONE.** The §1 acceptance script passed verbatim, in both template
+  languages: POST /orders → 201 "pending" → worker marks it "processed" in
+  DynamoDB (~300ms) → GET /orders/{id} returns the real record → data and
+  queued jobs survive restarts → `aws --endpoint-url … dynamodb scan` works
+  against the local table. Implementation: internal/services/dynamodb —
+  SQLite-backed tables behind the façade (DynamoDB_20120810), full item ops
+  (Put/Get/Update/Delete + conditions + ReturnValues), Query (sort-key
+  ranges, numeric ordering, ScanIndexForward, AWS-faithful Limit-then-filter,
+  LastEvaluatedKey pagination), Scan, Batch(Get|Write), table admin; a
+  hand-rolled expression engine covering the documented subset (comparisons,
+  BETWEEN, begins_with, attribute_exists/not_exists, contains, AND/OR/NOT,
+  SET ± arithmetic, if_not_exists, REMOVE, ADD) with loud ValidationException
+  messages for everything outside it (nested paths, IN, list_append, GSIs,
+  transactions). Templates flipped: boto3 resource / lib-dynamodb Document
+  client; Node variant moved to a single root package.json. /api/tables +
+  item counts in `pulse list`. Next: **Phase 5 — Inspect Everything** (and
+  the desktop-app decision point).
+
+- **2026-07-29 — Template language variants.** `pulse init --template
+  order-pipeline --lang node|python` scaffolds the golden app fully in either
+  language (Node: SDK v3 api + Node worker; Python: boto3 api + Python
+  worker; both degrade gracefully until the SDK is installed). Mechanism:
+  `_<lang>/` variant directories in templates, filtered at render; templates
+  with variants require --lang, others reject it. Runtimes remain per-function
+  in pulse.yaml — mixed-language apps are fully supported by hand. Backlog
+  noted: venv-aware Python interpreter resolution.
+
+- **2026-07-29 — Phase 3 (Process Background Jobs) complete.** The AWS façade
+  is live (always-on loopback endpoint, JSON protocol routed by X-Amz-Target,
+  smithy error shapes, clear upgrade hint for legacy Query-protocol SDKs) and
+  workers now run with AWS_ENDPOINT_URL injected — unmodified boto3/JS-SDK
+  code talks to pulse, and local code can never accidentally reach real AWS.
+  SQS mock: SQLite-persisted messages, Send/Receive/Delete(+batches),
+  visibility timeouts, DelaySeconds, long-poll, ChangeVisibility, Purge,
+  GetQueueAttributes, MD5s (body + attributes), DLQ redrive after
+  maxReceiveCount. Event source mapping: per-trigger pollers, Lambda-shaped
+  SQS batches, partial-batch-failure contract honored, queue-visibility
+  retries (AWS-faithful), console/log lines per batch, live depths in
+  `pulse list` + /api/queues. Live-verified with the real @aws-sdk/client-sqs:
+  curl → api enqueues → worker consumes in ~200ms; poison job retried 3× then
+  dead-lettered. Next: **Phase 4 — Persist Data (DynamoDB)**.
+
+- **2026-07-29 — Phase 2 (Build an API) complete.** The engine now serves http
+  triggers on localhost:3000 (configurable via api.port / --port): route table
+  with `{param}` and greedy `{proxy+}` matching and API-Gateway precedence
+  (exact method > ANY, literal > param > greedy, trailing slashes normalized
+  like HTTP APIs); proxy events in v2 format by default with v1 available per
+  trigger (payloadFormat); response mapping incl. v2 auto-wrap, base64 bodies,
+  cookies, and 500/502 error semantics; 10MB body cap; access-log lines in the
+  start console and in the target function's logs; every request recorded as a
+  replayable http event sharing the invocation's request id. Live-verified:
+  201/404/422/500 flows and hot-reload-while-serving on the order-pipeline
+  template. Next: **Phase 3 — Process Background Jobs (SQS)**.
+
 - **2026-07-29 — Roadmap reshaped, Phase 1 complete.** Per Geetansh's direction,
   the MVP now centers on ONE golden workflow (CRUD + background jobs, offline)
   with six story-shaped phases; SNS/S3/streams/EventBridge moved to the

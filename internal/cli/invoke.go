@@ -13,9 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"pulse/internal/awsfacade"
 	"pulse/internal/config"
 	"pulse/internal/engine"
 	"pulse/internal/logs"
+	dynamodb "pulse/internal/services/dynamodb"
+	sqs "pulse/internal/services/sqs"
 	"pulse/internal/store"
 	"pulse/internal/workers"
 )
@@ -128,8 +131,10 @@ func invokeViaEngine(info *engine.RunInfo, cfg *config.Config, function string, 
 	return out, err
 }
 
-// invokeEphemeral boots the worker manager in-process (no engine, no
-// runfile), runs the single invocation, and tears everything down.
+// invokeEphemeral boots the worker manager (plus the AWS façade, so SDK
+// calls work identically) in-process — no engine, no runfile — runs the
+// single invocation, and tears everything down. Messages the function
+// enqueues stay in the store; a later `pulse start` delivers them.
 func invokeEphemeral(cfg *config.Config, function string, payload []byte) (engine.InvokeResult, error) {
 	var out engine.InvokeResult
 
@@ -140,7 +145,23 @@ func invokeEphemeral(cfg *config.Config, function string, payload []byte) (engin
 	defer st.Close()
 
 	sink := logs.NewSink(st)
+
+	facade := awsfacade.New()
+	svc := sqs.New(cfg, st)
+	facade.Register("AmazonSQS", "sqs", svc)
+	ddb := dynamodb.New(cfg, st)
+	if err := ddb.Init(cfg); err != nil {
+		return out, err
+	}
+	facade.Register("DynamoDB_20120810", "dynamodb", ddb)
+	if err := facade.Start(0); err != nil {
+		return out, err
+	}
+	defer facade.Close()
+	svc.SetBaseURL(facade.URL)
+
 	mgr := workers.NewManager(cfg, st, sink)
+	mgr.SetAWSEndpoint(facade.URL())
 	if err := mgr.Start(); err != nil {
 		return out, err
 	}

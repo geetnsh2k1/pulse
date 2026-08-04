@@ -16,11 +16,17 @@ import (
 	"pulse/internal/version"
 )
 
+var flagPort int
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Boot the local environment (foreground; Ctrl+C to stop)",
 	Args:  cobra.NoArgs,
 	RunE:  runStart,
+}
+
+func init() {
+	startCmd.Flags().IntVar(&flagPort, "port", 0, "override the api port from pulse.yaml")
 }
 
 func runStart(_ *cobra.Command, _ []string) error {
@@ -29,6 +35,9 @@ func runStart(_ *cobra.Command, _ []string) error {
 	cfg, err := loadProject()
 	if err != nil {
 		return err
+	}
+	if flagPort > 0 {
+		cfg.API.Port = flagPort
 	}
 
 	if info, ok := engine.Current(cfg.Root); ok {
@@ -54,9 +63,34 @@ func runStart(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("pulse %s — project %s (%s)\n", version.Version, cfg.Project, cfg.Region)
 	fmt.Printf("  functions  %d (%s)\n", len(cfg.Functions), strings.Join(cfg.FunctionNames(), ", "))
-	fmt.Printf("  triggers   %d\n", len(cfg.Triggers))
+	if apiURL := eng.APIURL(); apiURL != "" {
+		fmt.Printf("  api        %s\n", apiURL)
+		label := "routes"
+		for _, rt := range eng.Routes() {
+			fmt.Printf("  %-9s  %s %s → %s\n", label, rt.Method, rt.Path, rt.Function)
+			label = ""
+		}
+	}
+	fmt.Printf("  aws        %s (%s)\n", eng.AWSURL(), strings.Join(eng.AWSServices(), ", "))
 	fmt.Printf("  control    %s\n", eng.ControlAddr())
-	fmt.Printf("engine ready in %s — press Ctrl+C to stop\n", eng.ReadyIn().Round(time.Millisecond))
+	fmt.Printf("engine ready in %s — code & pulse.yaml changes apply live · Ctrl+C to stop\n", eng.ReadyIn().Round(time.Millisecond))
+
+	// Stream every function's output into this console: the terminal
+	// running `pulse start` tells the whole story.
+	feed, cancelFeed := eng.LogFeed()
+	defer cancelFeed()
+	go func() {
+		for line := range feed {
+			if line.Stream == "system" {
+				continue // delivery/reload lines already print via OnEvent
+			}
+			marker := "|"
+			if line.Stream == "stderr" {
+				marker = "!"
+			}
+			fmt.Printf("  %s %s %s\n", line.Function, marker, line.Text)
+		}
+	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)

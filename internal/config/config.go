@@ -35,6 +35,7 @@ const (
 type Config struct {
 	Project   string               `yaml:"project" json:"project"`
 	Region    string               `yaml:"region" json:"region"`
+	API       APIConfig            `yaml:"api" json:"api"`
 	Functions map[string]*Function `yaml:"functions" json:"functions"`
 	Triggers  []*Trigger           `yaml:"triggers" json:"triggers"`
 	Resources Resources            `yaml:"resources" json:"resources"`
@@ -43,6 +44,13 @@ type Config struct {
 	Root string `yaml:"-" json:"root"`
 	// Path is the absolute path of the loaded pulse.yaml.
 	Path string `yaml:"-" json:"-"`
+}
+
+// APIConfig configures the local HTTP front door (phase 2+).
+type APIConfig struct {
+	// Port for the local API server. Defaults to 3000; 0 picks a random
+	// free port (useful in tests). Only bound when http triggers exist.
+	Port int `yaml:"port" json:"port"`
 }
 
 type Function struct {
@@ -64,6 +72,9 @@ type Trigger struct {
 	// http
 	Method string `yaml:"method,omitempty" json:"method,omitempty"`
 	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
+	// PayloadFormat picks the proxy-event shape handed to the function:
+	// "2.0" (HTTP API, default) or "1.0" (REST API).
+	PayloadFormat string `yaml:"payloadFormat,omitempty" json:"payloadFormat,omitempty"`
 
 	// sqs
 	Queue     string `yaml:"queue,omitempty" json:"queue,omitempty"`
@@ -97,6 +108,26 @@ type Table struct {
 type KeyDef struct {
 	Name string `yaml:"name" json:"name"`
 	Type string `yaml:"type" json:"type"` // S | N | B
+}
+
+// UnmarshalYAML accepts both the full form `{ name: id, type: S }` and the
+// shorthand `pk: id` (type defaults to S) — most tables only need the latter.
+func (k *KeyDef) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		k.Name = value.Value
+		k.Type = "S"
+		return nil
+	}
+	type plain KeyDef
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*k = KeyDef(p)
+	if k.Type == "" {
+		k.Type = "S"
+	}
+	return nil
 }
 
 type Queue struct {
@@ -188,12 +219,18 @@ func (c *Config) applyDefaults() {
 			fn.Memory = 128
 		}
 	}
+	if c.API.Port == 0 {
+		c.API.Port = 3000
+	}
 	for _, t := range c.Triggers {
 		if t == nil {
 			continue
 		}
 		t.Type = strings.ToLower(strings.TrimSpace(t.Type))
 		t.Method = strings.ToUpper(strings.TrimSpace(t.Method))
+		if t.Type == "http" && t.PayloadFormat == "" {
+			t.PayloadFormat = "2.0"
+		}
 		if t.Type == "sqs" && t.BatchSize == 0 {
 			t.BatchSize = 10
 		}

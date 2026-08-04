@@ -3,8 +3,13 @@ region: us-east-1
 
 functions:
   api:
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+    handler: src.api.handler
+{{- else}}
     runtime: nodejs20.x
     handler: src/api.handler
+{{- end}}
     codeDir: services/api
     timeout: 10
     memory: 256
@@ -12,10 +17,16 @@ functions:
       TABLE_NAME: orders
       QUEUE_NAME: order-events
   worker:
+{{- if eq .Lang "python"}}
     runtime: python3.12
-    handler: handler.process
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handle
     codeDir: services/worker
     timeout: 30
+    env:
+      TABLE_NAME: orders
 
 triggers:
   - type: http
@@ -34,9 +45,10 @@ triggers:
 resources:
   tables:
     orders:
-      pk: { name: id, type: S }
+      pk: id                 # partition key (shorthand: type defaults to S)
   queues:
     order-events:
       dlq: order-events-dlq
       maxReceiveCount: 3
+      visibilityTimeout: 5   # short so local retries are snappy to watch
     order-events-dlq: {}

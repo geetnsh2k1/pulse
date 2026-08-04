@@ -85,6 +85,9 @@ func (v *validator) run() {
 	if len(c.Functions) == 0 {
 		v.addf("functions", "at least one function is required")
 	}
+	if c.API.Port < 0 || c.API.Port > 65535 {
+		v.addf("api.port", "%d is out of range [0, 65535]", c.API.Port)
+	}
 	v.functions()
 	v.triggers()
 	v.resources()
@@ -173,6 +176,9 @@ func (v *validator) triggers() {
 			} else if !httpMethods[t.Method] {
 				v.addf(p+".method", "%q is not a valid HTTP method", t.Method)
 			}
+			if t.PayloadFormat != "2.0" && t.PayloadFormat != "1.0" {
+				v.addf(p+".payloadFormat", "%q is not valid (valid: \"2.0\", \"1.0\")", t.PayloadFormat)
+			}
 			if t.Path == "" {
 				v.addf(p+".path", "required for http triggers, e.g. %q", "/orders")
 			} else if msg := validHTTPPath(t.Path); msg != "" {
@@ -227,8 +233,14 @@ func (v *validator) resources() {
 	c := v.cfg
 	for name, tb := range c.Resources.Tables {
 		p := "resources.tables." + name
+		if tb.PK.Type == "" {
+			tb.PK.Type = "S"
+		}
+		if tb.SK != nil && tb.SK.Type == "" {
+			tb.SK.Type = "S"
+		}
 		if tb.PK.Name == "" {
-			v.addf(p+".pk", "required — e.g. { name: id, type: S }")
+			v.addf(p+".pk", "required — shorthand `pk: id` or full `pk: { name: id, type: S }`")
 		} else if !keyTypes[tb.PK.Type] {
 			v.addf(p+".pk.type", "%q is not a valid key type (valid: S, N, B)", tb.PK.Type)
 		}
@@ -291,7 +303,8 @@ func validHTTPPath(p string) string {
 	if p == "/" {
 		return ""
 	}
-	for _, seg := range strings.Split(strings.TrimPrefix(p, "/"), "/") {
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i, seg := range segs {
 		if seg == "" {
 			return "has an empty path segment (double or trailing slash?)"
 		}
@@ -299,6 +312,9 @@ func validHTTPPath(p string) string {
 		closed := strings.HasSuffix(seg, "}")
 		if open != closed || (open && len(seg) < 3) {
 			return fmt.Sprintf("malformed parameter segment %q (expected {name})", seg)
+		}
+		if open && strings.HasSuffix(seg, "+}") && i != len(segs)-1 {
+			return fmt.Sprintf("greedy segment %q must be the last path segment", seg)
 		}
 	}
 	return ""

@@ -29,11 +29,13 @@ func init() {
 		"run as if pulse was started in this directory")
 	rootCmd.AddCommand(
 		initCmd,
+		addCmd,
 		startCmd,
 		stopCmd,
 		listCmd,
 		validateCmd,
 		invokeCmd,
+		sendCmd,
 		logsCmd,
 		versionCmd,
 	)

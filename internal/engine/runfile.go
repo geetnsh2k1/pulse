@@ -18,7 +18,9 @@ import (
 // by trusting this file — leftover files from crashes are cleaned up lazily.
 type RunInfo struct {
 	PID       int       `json:"pid"`
-	Addr      string    `json:"addr"` // control API base URL
+	Addr      string    `json:"addr"`              // control API base URL
+	APIAddr   string    `json:"apiAddr,omitempty"` // local API base URL (when http triggers exist)
+	AWSAddr   string    `json:"awsAddr,omitempty"` // local AWS endpoint (the façade)
 	Project   string    `json:"project"`
 	Root      string    `json:"root"`
 	Version   string    `json:"version"`

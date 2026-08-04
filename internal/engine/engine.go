@@ -1,6 +1,10 @@
 // Package engine is the long-running heart of pulse: it owns project state,
-// runs the worker manager and hot-reload watcher, and exposes the local
-// control API consumed by the CLI today and the desktop app later.
+// runs the worker manager, gateway, queue pollers, and hot-reload watcher,
+// and exposes the local control API consumed by the CLI and the future UI.
+//
+// pulse.yaml changes apply LIVE: the engine validates the new config, swaps
+// its subsystems in place, and keeps serving — no restarts. Invalid configs
+// are rejected with the full problem list while the old config keeps running.
 package engine
 
 import (
@@ -16,8 +20,13 @@ import (
 	"sync"
 	"time"
 
+	"pulse/internal/awsfacade"
 	"pulse/internal/config"
+	"pulse/internal/esm"
+	"pulse/internal/gateway"
 	"pulse/internal/logs"
+	ddbsvc "pulse/internal/services/dynamodb"
+	sqssvc "pulse/internal/services/sqs"
 	"pulse/internal/store"
 	"pulse/internal/version"
 	"pulse/internal/watch"
@@ -26,18 +35,30 @@ import (
 
 // Milestone is stamped into /health so clients can tell what this build
 // of the engine is capable of.
-const Milestone = "P1"
+const Milestone = "P4+dx"
 
 type Engine struct {
-	cfg  *config.Config
-	st   *store.Store
-	sink *logs.Sink
-	mgr  *workers.Manager
-	wtch *watch.Watcher
+	// immutable after New/Start
+	st     *store.Store
+	path   string // pulse.yaml location
+	root   string
+	sink   *logs.Sink
+	facade *awsfacade.Facade
 
 	// OnEvent, when set (by `pulse start`), receives human-readable
-	// happenings like hot reloads. Set it before calling Start.
+	// happenings like hot reloads and config applies. Set before Start.
 	OnEvent func(msg string)
+
+	// mu guards the swappable state below (config hot-apply).
+	mu       sync.RWMutex
+	cfg      *config.Config
+	sqs      *sqssvc.Service
+	ddb      *ddbsvc.Service
+	mgr      *workers.Manager
+	gw       *gateway.Server // nil when the config has no http triggers
+	pollers  *esm.Poller     // nil when the config has no sqs triggers
+	wtch     *watch.Watcher
+	applying bool
 
 	ln        net.Listener
 	srv       *http.Server
@@ -51,33 +72,44 @@ type Engine struct {
 
 func New(cfg *config.Config, st *store.Store) *Engine {
 	return &Engine{
-		cfg:        cfg,
 		st:         st,
+		cfg:        cfg,
+		path:       cfg.Path,
+		root:       cfg.Root,
 		shutdownCh: make(chan struct{}),
 		serveErrCh: make(chan error, 1),
 	}
 }
 
-// Start boots the worker manager, the file watcher, and the control API,
-// then writes the runfile. t0 is when the caller began booting, so ready-in
-// reflects the whole boot.
+// Start boots the AWS façade, all config-driven subsystems, and the control
+// API, then writes the runfile. t0 is when the caller began booting.
 func (e *Engine) Start(t0 time.Time) error {
 	e.sink = logs.NewSink(e.st)
-	e.mgr = workers.NewManager(e.cfg, e.st, e.sink)
-	if err := e.mgr.Start(); err != nil {
+
+	// The façade outlives config applies so worker env stays valid.
+	e.facade = awsfacade.New()
+	if err := e.facade.Start(0); err != nil {
 		return err
 	}
+	go func() {
+		select {
+		case err := <-e.facade.ServeErr():
+			if err != nil {
+				e.serveErrCh <- fmt.Errorf("aws endpoint: %w", err)
+			}
+		case <-e.shutdownCh:
+		}
+	}()
 
-	e.wtch = watch.New(e.cfg, e.onCodeChange)
-	if err := e.wtch.Start(); err != nil {
-		e.mgr.Shutdown()
-		return fmt.Errorf("starting file watcher: %w", err)
+	if err := e.startSubsystems(e.cfg); err != nil {
+		_ = e.facade.Close()
+		return err
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		e.wtch.Stop()
-		e.mgr.Shutdown()
+		e.stopSubsystems()
+		_ = e.facade.Close()
 		return fmt.Errorf("binding control API: %w", err)
 	}
 	e.ln = ln
@@ -90,20 +122,191 @@ func (e *Engine) Start(t0 time.Time) error {
 	e.startedAt = time.Now()
 	e.readyIn = time.Since(t0)
 
-	if err := WriteRunInfo(e.cfg.Root, RunInfo{
-		PID:       os.Getpid(),
-		Addr:      e.ControlAddr(),
-		Project:   e.cfg.Project,
-		Root:      e.cfg.Root,
-		Version:   version.Version,
-		StartedAt: e.startedAt.UTC(),
-	}); err != nil {
+	if err := e.writeRunfile(); err != nil {
 		e.srv.Close()
-		e.wtch.Stop()
-		e.mgr.Shutdown()
+		e.stopSubsystems()
+		_ = e.facade.Close()
 		return fmt.Errorf("writing runfile: %w", err)
 	}
 	return nil
+}
+
+// startSubsystems builds everything derived from cfg and publishes it.
+func (e *Engine) startSubsystems(cfg *config.Config) error {
+	sqs := sqssvc.New(cfg, e.st)
+	sqs.SetBaseURL(e.facade.URL)
+	sqs.SetOnEvent(e.event)
+
+	ddb := ddbsvc.New(cfg, e.st)
+	if err := ddb.Init(cfg); err != nil {
+		return fmt.Errorf("initializing local dynamodb: %w", err)
+	}
+	e.facade.Register("AmazonSQS", "sqs", sqs)
+	e.facade.Register("DynamoDB_20120810", "dynamodb", ddb)
+
+	mgr := workers.NewManager(cfg, e.st, e.sink)
+	mgr.SetAWSEndpoint(e.facade.URL())
+	if err := mgr.Start(); err != nil {
+		return err
+	}
+
+	var gw *gateway.Server
+	if hasTrigger(cfg, "http") {
+		gw = gateway.New(cfg, mgr, e.sink)
+		gw.OnRequest = e.event
+		if err := gw.Start(cfg.API.Port); err != nil {
+			mgr.Shutdown()
+			return err
+		}
+		go func(gw *gateway.Server) {
+			select {
+			case err := <-gw.ServeErr():
+				if err != nil {
+					e.serveErrCh <- fmt.Errorf("api server: %w", err)
+				}
+			case <-e.shutdownCh:
+			}
+		}(gw)
+	}
+
+	var pollers *esm.Poller
+	if hasTrigger(cfg, "sqs") {
+		pollers = esm.New(cfg, sqs, mgr, e.sink, e.event)
+		pollers.Start()
+	}
+
+	wtch := watch.New(cfg, e.onCodeChange)
+	if err := wtch.Start(); err != nil {
+		if pollers != nil {
+			pollers.Stop()
+		}
+		if gw != nil {
+			shutdownGateway(gw)
+		}
+		mgr.Shutdown()
+		return fmt.Errorf("starting file watcher: %w", err)
+	}
+
+	e.mu.Lock()
+	e.cfg, e.sqs, e.ddb, e.mgr, e.gw, e.pollers, e.wtch = cfg, sqs, ddb, mgr, gw, pollers, wtch
+	e.mu.Unlock()
+	return nil
+}
+
+// stopSubsystems tears down everything startSubsystems built.
+func (e *Engine) stopSubsystems() {
+	e.mu.Lock()
+	pollers, gw, wtch, mgr := e.pollers, e.gw, e.wtch, e.mgr
+	e.pollers, e.gw, e.wtch, e.mgr = nil, nil, nil, nil
+	e.mu.Unlock()
+
+	if pollers != nil {
+		pollers.Stop()
+	}
+	if gw != nil {
+		shutdownGateway(gw)
+	}
+	if wtch != nil {
+		wtch.Stop()
+	}
+	if mgr != nil {
+		mgr.Shutdown()
+	}
+}
+
+func shutdownGateway(gw *gateway.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = gw.Shutdown(ctx)
+}
+
+// applyConfig hot-swaps the running config after a pulse.yaml save.
+func (e *Engine) applyConfig() {
+	e.mu.Lock()
+	if e.applying {
+		e.mu.Unlock()
+		return
+	}
+	e.applying = true
+	old := e.cfg
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.applying = false
+		e.mu.Unlock()
+	}()
+
+	newCfg, err := config.Load(e.path)
+	if err != nil {
+		e.event("✗ pulse.yaml changed but has problems — keeping the current config:\n" + err.Error())
+		e.sink.System("engine", "", "rejected pulse.yaml change: "+err.Error(), time.Now().UnixMilli())
+		return
+	}
+
+	e.event("pulse.yaml changed — applying live…")
+	e.stopSubsystems()
+	if err := e.startSubsystems(newCfg); err != nil {
+		e.event(fmt.Sprintf("✗ couldn't apply the new config (%v) — rolling back", err))
+		if err2 := e.startSubsystems(old); err2 != nil {
+			e.serveErrCh <- fmt.Errorf("config rollback failed: %w", err2)
+		}
+		return
+	}
+	_ = e.writeRunfile()
+
+	e.event(fmt.Sprintf("✓ config applied — %d function(s), %d trigger(s)%s",
+		len(newCfg.Functions), len(newCfg.Triggers), apiNote(e.APIURL())))
+	e.mu.RLock()
+	mgr := e.mgr
+	e.mu.RUnlock()
+	if mgr != nil {
+		for _, note := range mgr.Warnings() {
+			e.event("note: " + note)
+		}
+	}
+	e.sink.System("engine", "", "config applied live", time.Now().UnixMilli())
+}
+
+func apiNote(apiURL string) string {
+	if apiURL == "" {
+		return ""
+	}
+	return ", api " + apiURL
+}
+
+func hasTrigger(cfg *config.Config, kind string) bool {
+	for _, t := range cfg.Triggers {
+		if t.Type == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) writeRunfile() error {
+	return WriteRunInfo(e.root, RunInfo{
+		PID:       os.Getpid(),
+		Addr:      e.ControlAddr(),
+		APIAddr:   e.APIURL(),
+		AWSAddr:   e.facade.URL(),
+		Project:   e.currentCfg().Project,
+		Root:      e.root,
+		Version:   version.Version,
+		StartedAt: e.startedAt.UTC(),
+	})
+}
+
+func (e *Engine) currentCfg() *config.Config {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cfg
+}
+
+// state snapshots the swappable pieces for request handlers.
+func (e *Engine) state() (*config.Config, *workers.Manager, *sqssvc.Service, *ddbsvc.Service, *gateway.Server) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cfg, e.mgr, e.sqs, e.ddb, e.gw
 }
 
 // ControlAddr is the base URL of the control API, e.g. http://127.0.0.1:52341.
@@ -112,22 +315,71 @@ func (e *Engine) ControlAddr() string { return "http://" + e.ln.Addr().String() 
 // ReadyIn reports how long boot took.
 func (e *Engine) ReadyIn() time.Duration { return e.readyIn }
 
-// Warnings surfaces runtime-resolution warnings for the start banner.
-func (e *Engine) Warnings() []string { return e.mgr.Warnings() }
+// AWSURL is the local AWS endpoint (the façade) workers talk to.
+func (e *Engine) AWSURL() string {
+	if e.facade == nil {
+		return ""
+	}
+	return e.facade.URL()
+}
+
+// AWSServices names the emulated services, for banners.
+func (e *Engine) AWSServices() []string {
+	if e.facade == nil {
+		return nil
+	}
+	return e.facade.Names()
+}
+
+// APIURL returns the local API base URL, or "" when no http triggers exist.
+func (e *Engine) APIURL() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.gw == nil {
+		return ""
+	}
+	return e.gw.URL()
+}
+
+// Routes lists the API routes served by the gateway.
+func (e *Engine) Routes() []gateway.RouteInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.gw == nil {
+		return nil
+	}
+	return e.gw.Routes()
+}
+
+// Warnings surfaces runtime-resolution notes for the start banner.
+func (e *Engine) Warnings() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.mgr == nil {
+		return nil
+	}
+	return e.mgr.Warnings()
+}
+
+// LogFeed streams every captured log line from every function — the start
+// console prints these so the terminal tells the whole story.
+func (e *Engine) LogFeed() (<-chan logs.Line, func()) {
+	return e.sink.Subscribe("")
+}
 
 // ShutdownRequested fires once a client POSTs /api/shutdown.
 func (e *Engine) ShutdownRequested() <-chan struct{} { return e.shutdownCh }
 
-// ServeErr surfaces a fatal control-API serve error.
+// ServeErr surfaces a fatal serve error.
 func (e *Engine) ServeErr() <-chan error { return e.serveErrCh }
 
-// Shutdown stops the watcher, kills workers, closes the control API, and
-// removes the runfile.
+// Shutdown stops everything and removes the runfile.
 func (e *Engine) Shutdown(ctx context.Context) error {
-	e.wtch.Stop()
-	e.mgr.Shutdown()
+	e.shutdownOnce.Do(func() { close(e.shutdownCh) })
+	e.stopSubsystems()
+	_ = e.facade.Close()
 	err := e.srv.Shutdown(ctx)
-	RemoveRunInfo(e.cfg.Root)
+	RemoveRunInfo(e.root)
 	return err
 }
 
@@ -139,11 +391,15 @@ func (e *Engine) event(msg string) {
 
 func (e *Engine) onCodeChange(functions []string, reason string) {
 	if functions == nil {
-		e.sink.System("engine", "", "pulse.yaml changed — restart `pulse start` to apply", time.Now().UnixMilli())
-		e.event("pulse.yaml changed — restart `pulse start` to apply it")
+		e.applyConfig()
 		return
 	}
-	e.mgr.Reload(functions)
+	e.mu.RLock()
+	mgr := e.mgr
+	e.mu.RUnlock()
+	if mgr != nil {
+		mgr.Reload(functions)
+	}
 	e.event(fmt.Sprintf("↻ hot reload: %s (%s)", strings.Join(functions, ", "), reason))
 }
 
@@ -155,6 +411,10 @@ func (e *Engine) routes() http.Handler {
 	mux.HandleFunc("GET /api/functions", e.handleFunctions)
 	mux.HandleFunc("GET /api/triggers", e.handleTriggers)
 	mux.HandleFunc("GET /api/resources", e.handleResources)
+	mux.HandleFunc("GET /api/routes", e.handleRoutes)
+	mux.HandleFunc("GET /api/queues", e.handleQueues)
+	mux.HandleFunc("POST /api/queues/send", e.handleQueueSend)
+	mux.HandleFunc("GET /api/tables", e.handleTables)
 	mux.HandleFunc("POST /api/invoke", e.handleInvoke)
 	mux.HandleFunc("GET /api/invocations", e.handleInvocations)
 	mux.HandleFunc("GET /api/logs", e.handleLogs)
@@ -174,33 +434,98 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func (e *Engine) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	cfg, _, _, _, gw := e.state()
+	var api any
+	if gw != nil {
+		api = map[string]any{"url": gw.URL(), "routes": len(gw.Routes())}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"aws":         map[string]any{"url": e.facade.URL(), "services": e.facade.Names()},
 		"status":      "ok",
-		"project":     e.cfg.Project,
-		"root":        e.cfg.Root,
+		"project":     cfg.Project,
+		"root":        e.root,
 		"version":     version.Version,
 		"milestone":   Milestone,
 		"pid":         os.Getpid(),
 		"uptime_ms":   time.Since(e.startedAt).Milliseconds(),
 		"ready_in_ms": e.readyIn.Milliseconds(),
-		"functions":   len(e.cfg.Functions),
+		"functions":   len(cfg.Functions),
+		"api":         api,
 	})
 }
 
 func (e *Engine) handleFunctions(w http.ResponseWriter, _ *http.Request) {
-	out := make([]*config.Function, 0, len(e.cfg.Functions))
-	for _, name := range e.cfg.FunctionNames() {
-		out = append(out, e.cfg.Functions[name])
+	cfg, _, _, _, _ := e.state()
+	out := make([]*config.Function, 0, len(cfg.Functions))
+	for _, name := range cfg.FunctionNames() {
+		out = append(out, cfg.Functions[name])
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (e *Engine) handleTriggers(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, e.cfg.Triggers)
+	cfg, _, _, _, _ := e.state()
+	writeJSON(w, http.StatusOK, cfg.Triggers)
 }
 
 func (e *Engine) handleResources(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, e.cfg.Resources)
+	cfg, _, _, _, _ := e.state()
+	writeJSON(w, http.StatusOK, cfg.Resources)
+}
+
+func (e *Engine) handleRoutes(w http.ResponseWriter, _ *http.Request) {
+	routes := e.Routes()
+	if routes == nil {
+		routes = []gateway.RouteInfo{}
+	}
+	writeJSON(w, http.StatusOK, routes)
+}
+
+func (e *Engine) handleQueues(w http.ResponseWriter, _ *http.Request) {
+	_, _, sqs, _, _ := e.state()
+	if sqs == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, sqs.AllStats())
+}
+
+func (e *Engine) handleTables(w http.ResponseWriter, _ *http.Request) {
+	_, _, _, ddb, _ := e.state()
+	if ddb == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, ddb.AllStats())
+}
+
+// handleQueueSend lets `pulse send` (and the future UI) drop a message on a
+// queue without going through an SDK.
+func (e *Engine) handleQueueSend(w http.ResponseWriter, r *http.Request) {
+	_, _, sqs, _, _ := e.state()
+	if sqs == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
+	var req struct {
+		Queue        string `json:"queue"`
+		Body         string `json:"body"`
+		DelaySeconds int    `json:"delaySeconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Queue == "" {
+		writeError(w, http.StatusBadRequest, `expected body {"queue": "...", "body": "..."}`)
+		return
+	}
+	id, apiErr := sqs.Send(req.Queue, req.Body, req.DelaySeconds, nil)
+	if apiErr != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(apiErr.Type, "QueueDoesNotExist") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, apiErr.Message)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"messageId": id})
 }
 
 // InvokeResult is the wire shape of POST /api/invoke.
@@ -214,6 +539,11 @@ type InvokeResult struct {
 }
 
 func (e *Engine) handleInvoke(w http.ResponseWriter, r *http.Request) {
+	_, mgr, _, _, _ := e.state()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
 	var req struct {
 		Function string          `json:"function"`
 		Event    json.RawMessage `json:"event"`
@@ -223,7 +553,7 @@ func (e *Engine) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := e.mgr.Invoke(r.Context(), req.Function, "manual", req.Event)
+	res, err := mgr.Invoke(r.Context(), req.Function, "manual", req.Event)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "unknown function") {

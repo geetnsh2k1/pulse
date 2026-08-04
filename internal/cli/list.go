@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -45,11 +47,16 @@ func runList(_ *cobra.Command, _ []string) error {
 		w.Flush()
 	}
 
-	printResources(cfg)
+	info, running := engine.Current(cfg.Root)
+	printResources(cfg, fetchQueueStats(info, running), fetchTableStats(info, running))
 
 	fmt.Println()
-	if info, ok := engine.Current(cfg.Root); ok {
-		fmt.Printf("engine: running (pid %d, %s)\n", info.PID, info.Addr)
+	if info, ok := info, running; ok {
+		if info.APIAddr != "" {
+			fmt.Printf("engine: running (pid %d, api %s, control %s)\n", info.PID, info.APIAddr, info.Addr)
+		} else {
+			fmt.Printf("engine: running (pid %d, control %s)\n", info.PID, info.Addr)
+		}
 	} else {
 		fmt.Println("engine: stopped")
 	}
@@ -72,7 +79,58 @@ func triggerDetails(t *config.Trigger) string {
 	return ""
 }
 
-func printResources(cfg *config.Config) {
+// fetchQueueStats asks a running engine for live queue depths ("" values
+// when the engine is stopped).
+func fetchQueueStats(info *engine.RunInfo, running bool) map[string]string {
+	stats := map[string]string{}
+	if !running {
+		return stats
+	}
+	resp, err := http.Get(info.Addr + "/api/queues")
+	if err != nil {
+		return stats
+	}
+	defer resp.Body.Close()
+	var rows []struct {
+		Name     string `json:"name"`
+		Visible  int    `json:"visible"`
+		InFlight int    `json:"inFlight"`
+		Delayed  int    `json:"delayed"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&rows) != nil {
+		return stats
+	}
+	for _, r := range rows {
+		stats[r.Name] = fmt.Sprintf("%d visible, %d in flight, %d delayed", r.Visible, r.InFlight, r.Delayed)
+	}
+	return stats
+}
+
+// fetchTableStats asks a running engine for live table item counts.
+func fetchTableStats(info *engine.RunInfo, running bool) map[string]string {
+	stats := map[string]string{}
+	if !running {
+		return stats
+	}
+	resp, err := http.Get(info.Addr + "/api/tables")
+	if err != nil {
+		return stats
+	}
+	defer resp.Body.Close()
+	var rows []struct {
+		Name  string `json:"name"`
+		Items int    `json:"items"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&rows) != nil {
+		return stats
+	}
+	for _, r := range rows {
+		stats[r.Name] = fmt.Sprintf("%d item(s)", r.Items)
+	}
+	return stats
+}
+
+func printResources(cfg *config.Config, queueStats, tableStats map[string]string) {
 	r := cfg.Resources
 	if len(r.Tables) == 0 && len(r.Buckets) == 0 && len(r.Queues) == 0 && len(r.Topics) == 0 {
 		return
@@ -81,25 +139,35 @@ func printResources(cfg *config.Config) {
 
 	for _, name := range sortedKeys(r.Tables) {
 		tb := r.Tables[name]
-		streams := "streams off"
-		if tb.Streams {
-			streams = "streams on"
-		}
 		key := fmt.Sprintf("pk %s %s", tb.PK.Name, tb.PK.Type)
 		if tb.SK != nil {
 			key += fmt.Sprintf(", sk %s %s", tb.SK.Name, tb.SK.Type)
 		}
-		fmt.Printf("  table   %s (%s, %s)\n", name, key, streams)
+		line := fmt.Sprintf("  table   %s (%s)", name, key)
+		if depth, ok := tableStats[name]; ok {
+			line += " · " + depth
+		}
+		fmt.Println(line)
 	}
 	for _, b := range r.Buckets {
 		fmt.Printf("  bucket  %s\n", b)
 	}
 	for _, name := range sortedKeys(r.Queues) {
 		q := r.Queues[name]
+		line := "  queue   " + name
 		if q.DLQ != "" {
-			fmt.Printf("  queue   %s (dlq %s after %d receives)\n", name, q.DLQ, q.MaxReceiveCount)
-		} else {
-			fmt.Printf("  queue   %s\n", name)
+			line += fmt.Sprintf(" (dlq %s after %d receives)", q.DLQ, q.MaxReceiveCount)
+		}
+		if depth, ok := queueStats[name]; ok {
+			line += " · " + depth
+		}
+		fmt.Println(line)
+	}
+	// Queues that exist at runtime but aren't declared (auto-created on
+	// first send) still deserve visibility.
+	for _, name := range sortedKeys(queueStats) {
+		if _, declared := r.Queues[name]; !declared {
+			fmt.Printf("  queue   %s (auto-created) · %s\n", name, queueStats[name])
 		}
 	}
 	for _, name := range sortedKeys(r.Topics) {

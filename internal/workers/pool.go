@@ -33,16 +33,18 @@ const (
 // GET /runtime/invocation/next exactly like real Lambda runtimes, which is
 // what lets the shims stay tiny and future official runtime clients plug in.
 type pool struct {
-	fn       *config.Function
-	region   string
-	arn      string
-	taskRoot string
-	shimDir  string
-	sink     *logs.Sink
+	fn          *config.Function
+	region      string
+	arn         string
+	projectRoot string
+	taskRoot    string
+	shimDir     string
+	sink        *logs.Sink
+	awsEndpoint string
 
-	rb    *runtimeBinary
-	rbErr error  // set when no usable interpreter exists
-	warn  string // version-mismatch warning, if any
+	rb      *runtimeBinary
+	rbErr   error    // set when no usable interpreter exists
+	rbNotes []string // venv/version notes for the start banner
 
 	runtimeAddr string
 	ln          net.Listener
@@ -71,21 +73,22 @@ type flight struct {
 
 func newPool(fn *config.Function, cfg *config.Config, sink *logs.Sink, shimDir string) *pool {
 	return &pool{
-		fn:       fn,
-		region:   cfg.Region,
-		arn:      fmt.Sprintf("arn:aws:lambda:%s:000000000000:function:%s", cfg.Region, fn.Name),
-		taskRoot: filepath.Join(cfg.Root, fn.CodeDir),
-		shimDir:  shimDir,
-		sink:     sink,
-		pending:  make(chan *Invocation, pendingQueueSize),
-		workers:  map[string]*worker{},
-		inflight: map[string]*flight{},
-		genCh:    make(chan struct{}),
+		fn:          fn,
+		region:      cfg.Region,
+		arn:         fmt.Sprintf("arn:aws:lambda:%s:000000000000:function:%s", cfg.Region, fn.Name),
+		projectRoot: cfg.Root,
+		taskRoot:    filepath.Join(cfg.Root, fn.CodeDir),
+		shimDir:     shimDir,
+		sink:        sink,
+		pending:     make(chan *Invocation, pendingQueueSize),
+		workers:     map[string]*worker{},
+		inflight:    map[string]*flight{},
+		genCh:       make(chan struct{}),
 	}
 }
 
 func (p *pool) start() error {
-	p.rb, p.warn, p.rbErr = resolveRuntime(p.fn.Runtime)
+	p.rb, p.rbNotes, p.rbErr = resolveRuntime(p.fn.Runtime, p.projectRoot)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -197,6 +200,15 @@ func (p *pool) workerEnv(workerID string) []string {
 		"AWS_SECRET_ACCESS_KEY=pulse-local-secret-key",
 		"PULSE_WORKER_ID=" + workerID,
 		"PYTHONUNBUFFERED=1",
+	}
+	if p.awsEndpoint != "" {
+		// Point AWS SDKs (boto3 ≥1.28, JS v3, CLI v2.13+) at the local
+		// façade. Everything a worker does stays on this machine.
+		env = append(env,
+			"AWS_ENDPOINT_URL="+p.awsEndpoint,
+			"AWS_ENDPOINT_URL_SQS="+p.awsEndpoint,
+			"AWS_ENDPOINT_URL_DYNAMODB="+p.awsEndpoint,
+		)
 	}
 	for k, v := range p.fn.Env {
 		env = append(env, k+"="+v)

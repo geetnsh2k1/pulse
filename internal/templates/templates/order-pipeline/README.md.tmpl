@@ -1,0 +1,39 @@
+# pulse starter: order-pipeline ({{.Lang}})
+
+The golden workflow: a CRUD API with background jobs and persistence,
+entirely offline.
+
+```
+POST /orders ──▶ api ──▶ DynamoDB put (status: pending)
+                  └────▶ SQS send ──▶ worker ─▶ DynamoDB update (status: processed)
+GET /orders/{id} ─▶ api ─▶ DynamoDB get — the real, current record
+```
+
+Dependencies were installed automatically by `pulse init`{{if eq .Lang "python"}} (a project
+`.venv` with boto3 — pulse finds it on its own, no activation needed){{end}}. If that
+was skipped or failed:
+
+{{if eq .Lang "python"}}```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```{{else}}```bash
+npm install
+```{{end}}
+
+The whole loop:
+
+```bash
+pulse start
+curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'   # → 201, status "pending"
+# a second later the worker marks it processed…
+curl localhost:3000/orders/<id>                                 # → status "processed" ✓
+```
+
+More to try: `pulse logs worker -f` (live jobs) · `pulse send order-events
+'{"id":"x"}'` (push a job by hand) · the DLQ demo `curl -X POST
+localhost:3000/orders -d '{"sku":"X","fail":true}'` (3 retries → dead-letter,
+watch `pulse list`) · stop and restart pulse — orders and queued jobs survive.
+
+pulse points the vanilla AWS SDK at its local mocks via `AWS_ENDPOINT_URL`,
+so this code runs unmodified in real AWS.
+
+Prefer the other language? `pulse init <name> --template order-pipeline --lang node|python`

@@ -17,10 +17,10 @@ demonstrably useful.
 |---|---|---|
 | 0 | Foundations: CLI, config, store, engine skeleton, templates | ✅ |
 | 1 | Run Lambda — execute a function locally (invoke, logs, hot reload) | ✅ |
-| 2 | Build an API — a REST API works entirely offline | ⏳ next |
-| 3 | Process background jobs — SQS + worker Lambda | – |
-| 4 | Persist data — DynamoDB | – |
-| 5 | Inspect everything — logs, events, replay | – |
+| 2 | Build an API — a REST API works entirely offline | ✅ |
+| 3 | Process background jobs — SQS + worker Lambda | ✅ |
+| 4 | Persist data — DynamoDB | ✅ |
+| 5 | Inspect everything — logs, events, replay | ⏳ next |
 | 6 | Team ready — cloud sync, packaging, sharing | – |
 
 Natural evolution after that: SNS, S3, EventBridge, Step Functions, more
@@ -30,13 +30,12 @@ runtimes, desktop app.
 
 ```bash
 make build                                  # → bin/pulse
-bin/pulse init demo --template node-api
-cd demo
-pulse validate                              # strict config check
-pulse list                                  # functions, triggers, resources
-pulse invoke hello --event events/hello.json  # run a Lambda locally (no engine needed)
-pulse start                                 # engine + hot reload (Ctrl+C to stop)
-pulse logs hello --follow                   # live logs (second terminal)
+bin/pulse init shop --template order-pipeline --lang python   # deps auto-install
+cd shop
+pulse start                                 # API + queues + tables + live apply
+curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'  # → 201 "pending"
+curl localhost:3000/orders/<id>             # → "processed", via queue + worker + table
+pulse add function notifier                 # scaffold more — applies live
 ```
 
 ## Project config
