@@ -33,9 +33,12 @@ var invokeCmd = &cobra.Command{
 	Short: "Invoke a function with a JSON event",
 	Long: `Invoke a function locally and print its result and logs.
 
+<function> is the function's name from pulse.yaml — the same names that
+` + "`pulse list`" + `, the start banner, and Tab completion show.
+
 Uses the running engine when there is one; otherwise boots an ephemeral
 worker just for this invocation — handy for scripts and CI.`,
-	Args: cobra.ExactArgs(1),
+	Args: oneFunctionArg("invoke"),
 	RunE: runInvoke,
 }
 

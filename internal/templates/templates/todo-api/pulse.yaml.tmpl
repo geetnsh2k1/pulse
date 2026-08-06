@@ -1,0 +1,55 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  createTodo:                    # POST /todos
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/create-todo
+    env:
+      TABLE_NAME: todos
+  listTodos:                     # GET /todos
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/list-todos
+    env:
+      TABLE_NAME: todos
+  completeTodo:                  # POST /todos/{id}/done
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/complete-todo
+    env:
+      TABLE_NAME: todos
+  deleteTodo:                    # DELETE /todos/{id}
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/delete-todo
+    env:
+      TABLE_NAME: todos
+
+triggers:
+  - { type: http, method: POST,   path: /todos, function: createTodo }
+  - { type: http, method: GET,    path: /todos, function: listTodos }
+  - { type: http, method: POST,   path: "/todos/{id}/done", function: completeTodo }
+  - { type: http, method: DELETE, path: "/todos/{id}", function: deleteTodo }
+
+resources:
+  tables:
+    todos:
+      pk: id                     # the whole schema — other fields are just code

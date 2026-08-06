@@ -20,7 +20,7 @@ real AWS later.
 ## 1. Get started in 2 minutes
 
 ```bash
-pulse init shop --template order-pipeline --lang python
+pulse init shop --template api-and-worker --lang python
 cd shop
 pulse start
 ```
@@ -65,22 +65,28 @@ Creates a folder with working sample code and installs its dependencies
 (npm, or a Python `.venv` that pulse finds by itself — you never activate it).
 
 ```bash
-pulse init shop --template order-pipeline --lang python
+pulse init shop --template api-and-worker --lang python
 ```
 
-- Templates: `order-pipeline` (API + queue + worker + table, `--lang node|python`),
-  `node-api` / `python-api` (one hello function). `pulse init --list` shows them.
+Or just `pulse init` with no arguments — it asks three quick questions
+(name, template, language; Enter picks the default) and does the same thing.
+
+- Templates (all take `--lang node|python`): `hello` — one function, the
+  smallest start · `todo-api` — real CRUD on one table · `webhook-relay` —
+  ack-fast webhook handling with retries + DLQ · `api-and-worker` — the full
+  demo (API + queue + worker + table). `pulse init --list` shows them.
 - `--no-install` skips dependency installation.
 
 ### 3.2 Start your local cloud — `pulse start`
 
 ```
 pulse 0.1.0-dev — project shop (us-east-1)
-  functions  3 (api, notifier, worker)     ← your code
-  api        http://localhost:3000          ← your REST API
-  routes     POST /orders → api             ← who answers what
+  functions  3 (createOrder, getOrder, worker)   ← your code
+  api        http://localhost:3000                ← your REST API
+  routes     POST /orders → createOrder           ← who answers what
+             GET /orders/{id} → getOrder
   aws        http://127.0.0.1:50407 (sqs, dynamodb)   ← what the AWS SDK talks to
-  control    http://127.0.0.1:50411         ← pulse's own plumbing
+  control    http://127.0.0.1:50411                ← pulse's own plumbing
 engine ready in 33ms — code & pulse.yaml changes apply live · Ctrl+C to stop
 ```
 
@@ -93,7 +99,7 @@ A `http` trigger maps a URL to a function:
 
 ```yaml
 triggers:
-  - { type: http, method: GET, path: "/orders/{id}", function: api }
+  - { type: http, method: GET, path: "/orders/{id}", function: getOrder }
 ```
 
 The function receives a real API Gateway event and returns the response:
@@ -127,9 +133,17 @@ pulse add function notifier
   try    pulse invoke notifier -d '{"hello":1}'
 ```
 
-Open `services/notifier/handler.py` — it's yours to edit. The starter
-already handles all three ways a function can run (HTTP request, queue
-batch, direct invoke), so it will work wherever you wire it later.
+Open `services/notifier/handler.py` — it's the classic Lambda shape, yours
+to edit:
+
+```python
+def handler(event, context):
+    print("received:", json.dumps(event))
+    return {"ok": True}
+```
+
+It works wherever you wire it later — `event` is simply whatever triggers
+it (an HTTP request, a queue batch, or your invoke JSON).
 
 ### 3.5 Run a function by hand — `pulse invoke`
 
@@ -146,55 +160,130 @@ pulse invoke notifier -d '{"hello":1}'
 
 ```
 ✓ notifier · success · 3ms · request 370b791a
-  22:49:50.651  stdout  invoked with: {"hello": 1}
+  22:49:50.651  stdout  received: {"hello": 1}
 {"ok": true}
 ```
 
 The event JSON is simply what your function receives as `event` — pulse
-passes it through untouched.
+passes it through untouched. Longer event? Put it in a file:
+`pulse invoke notifier -e event.json`.
 
-**Testing a trigger-wired function?** Give it an event shaped like its
-trigger would send. Queue deliveries arrive as `{"Records": [...]}`, so this
-runs the template's `worker` *as if* the queue had delivered — without
-touching the queue. Templates ship ready-made sample events for exactly this:
+- `invoke` skips URLs and queues on purpose — it tests **the function
+  alone**. (Wiring the function up comes next.)
+- Works with the engine stopped. Exit code is 1 on failure — CI-safe.
+
+**Next: give it a URL.** A function and its URL are separate on purpose —
+same as real AWS, where a Lambda exists on its own and an API Gateway route
+pointing at it is a second thing (a function might be queue-only, or serve
+several routes). One command wires it, applied live:
 
 ```bash
-pulse invoke worker -e events/sqs-message.json
+pulse add route POST /notify --function notifier
 ```
 
-- Rule of thumb: `curl` tests route + function · `pulse send` tests queue +
-  function · `pulse invoke` tests **the function alone**.
-- Works with the engine stopped. Exit code is 1 on failure — CI-safe.
+```bash
+curl -X POST localhost:3000/notify -d '{"msg":"hi"}'    # → {"ok": true}
+```
+
+The starter returns a bare object, so pulse auto-wraps it as a 200 JSON
+response; the console shows the request line plus `notifier | received: …`
+with the full HTTP event your function saw. A URL is one way to trigger a
+function — the other is a queue, and that's next.
 
 ### 3.6 Background jobs — queues + workers
 
-A queue is a mailbox; a `sqs` trigger makes a function its worker. The
-sender never waits.
+Some work shouldn't happen while a caller waits: sending an email, resizing
+an image, calling a slow third party. So your code drops a **message** on a
+**queue** and replies immediately; a **worker** — an ordinary function —
+picks the message up a moment later. If it fails, it retries automatically
+(3.7).
+
+The one rule: **you never call a worker yourself.** pulse watches the queue
+and calls the worker whenever messages arrive:
+
+```
+sender ──▶ queue (mailbox) ──▶ pulse delivers ──▶ worker function
+```
+
+**Step 1 — create the whole chain with one command** (queue + worker
+function + wiring):
+
+```bash
+pulse add queue emails --worker send-email
+```
+
+```
+✓ added queue emails → send-email
+  also created function send-email — its handler is services/send-email/handler.py
+  try    pulse send emails '{"hello":1}'   (needs `pulse start` running to deliver)
+  watch  pulse logs send-email -f
+```
+
+Behind the scenes that's two entries in `pulse.yaml` (hand-writing them
+works exactly as well):
 
 ```yaml
 triggers:
-  - { type: sqs, queue: order-events, function: worker }
+  - { type: sqs, queue: emails, function: send-email }
 resources:
   queues:
-    order-events: {}          # that's a complete queue definition
+    emails: {}               # that's a complete queue definition
 ```
 
-Send a message — from code (`sqs.send_message(...)` with plain boto3), or by
-hand:
+**Step 2 — send a job and watch the console:**
 
 ```bash
-pulse send order-events '{"id":"job-1"}'
+pulse send emails '{"to":"ana@example.com"}'
 ```
 
-Within a second or two, the engine console shows the delivery and the work:
-
 ```
-⚙ sqs order-events → worker · batch of 1 · ok
-  worker | processed order job-1 (attempt 1)
+⚙ sqs emails → send-email · batch of 1 · ok
+  send-email | received: {"Records": [{…, "body": "{\"to\":\"ana@example.com\"}", …}]}
 ```
 
+That log line shows the one thing to know about workers: queue messages
+arrive wrapped in a `Records` **batch** (usually of one), and your message
+is each record's `body` — as a string.
+
+**Step 3 — make it a real worker.** Edit
+`services/send-email/handler.py` to the standard three-line pattern and
+save (hot reload does the rest):
+
+```python
+import json
+
+def handler(event, context):
+    for record in event["Records"]:        # deliveries arrive in batches
+        job = json.loads(record["body"])   # your message, exactly as you sent it
+        print("emailing", job["to"])
+```
+
+Send the same message again — `send-email | emailing ana@example.com`.
+That's a working background job.
+
+**Different jobs, different workers.** One queue per job type, each with
+its own small function — the same command every time:
+
+```bash
+pulse add queue thumbnails --worker make-thumbnail
+pulse add queue reports    --worker report-builder
+```
+
+- Each queue delivers only to its own worker (the template's pair is
+  `order-events → worker`).
+- `--worker some-existing-fn` attaches a function you already have — no new
+  file; the output names the handler file that will receive the messages.
+- Sending **from code** is plain SDK — see `services/create-order/handler.py`
+  in the template: it queues a job for every new order in two lines.
+
+Good to know:
+
+- Rule of thumb: `curl` tests route + function · `pulse send` tests queue +
+  function · `pulse invoke` tests the function alone. To test a worker
+  *alone*, invoke it with a `Records`-shaped event — the template ships one:
+  `pulse invoke worker -e events/sqs-message.json`.
 - Sending to an undeclared queue **auto-creates it** (declare it only to
-  configure a DLQ or visibility).
+  configure retries/DLQ — next section).
 - `pulse send` with the engine stopped parks the message; it's delivered on
   the next `pulse start`.
 
@@ -214,46 +303,105 @@ resources:
     order-events-dlq: {}
 ```
 
-Try it — the demo worker fails on purpose when the order has `"fail": true`:
+For your own queues, `--dlq` at creation time writes exactly this shape:
+`pulse add queue payments --worker charge --dlq`.
+
+Try it — the demo worker raises on purpose when the order has `"fail": true`:
 
 ```bash
 curl -X POST localhost:3000/orders -d '{"sku":"X","fail":true}'
 ```
 
 ```
-  worker | job … failing on purpose (attempt 1)   (then 2, then 3, 5s apart)
+  worker ! RuntimeError: order … failed on purpose (attempt 1)   (then 2, then 3, 5s apart)
 ☠ order-events: message moved to dead-letter queue order-events-dlq after 3 receives
 ```
 
+- **Raising/throwing is how a worker says "retry me"** — the whole batch is
+  redelivered. That's what the template worker does, and it's standard
+  Lambda behavior.
+- To fail just *one* message of a batch, return its id in
+  `batchItemFailures` instead of raising (see the AWS docs pattern).
 - Keep `visibilityTimeout` **larger than** the worker's `timeout` in real
   projects (the demo uses 5s so retries are fast to watch).
-- A worker can fail just one message of a batch by returning its id in
-  `batchItemFailures` — the sample workers show how.
 
 ### 3.8 Saving data — tables
 
-A table's entire schema is its key. Every other field is just code — add
-fields any time, no config change, exactly like real DynamoDB:
+A table's entire schema is **its key** — every other field is just code.
+Add fields any time, no config change, no migrations, exactly like real
+DynamoDB.
+
+```bash
+pulse add table customers --pk email
+```
+
+```
+✓ added table customers (pk email)
+  your code can use it right away — no schema for the other columns: just write items
+```
+
+Behind the scenes, one entry in `pulse.yaml`:
 
 ```yaml
 resources:
   tables:
-    orders:
-      pk: id            # complete table definition (type defaults to S/string)
+    customers:
+      pk: email         # complete table definition (type defaults to S/string)
 ```
+
+Use it with the plain SDK — pulse points it at the local table automatically:
 
 ```python
-table = boto3.resource("dynamodb").Table("orders")
-table.put_item(Item={"id": "42", "sku": "A1", "status": "pending"})
-item = table.get_item(Key={"id": "42"}).get("Item")
+customers = boto3.resource("dynamodb").Table("customers")
+
+customers.put_item(Item={"email": "ana@x.com", "name": "Ana", "tier": "gold"})
+item = customers.get_item(Key={"email": "ana@x.com"}).get("Item")
 ```
 
+- Need to fetch *groups* of rows, not single ids? Add a **sort key**:
+  `pulse add table events --pk userId --sk createdAt:N` — then Query returns
+  "all events for user X, in time order". Key types: `S` string (default),
+  `N` number, `B` binary.
 - Supported: Put/Get/Update/Delete, Query, Scan, conditions, batches,
   pagination. Unsupported things (indexes, transactions, nested paths) fail
   with a message saying exactly that — never silently wrong.
-- Using an undeclared table? The error contains the yaml snippet to paste.
+- Tables don't auto-create (queues do) — a table needs *you* to choose its
+  key. Use an undeclared one and the error hands you the exact yaml snippet
+  to paste.
 - Data survives restarts. `pulse list` shows item counts; the AWS CLI v2 can
   `dynamodb scan` against the `aws` URL from the banner.
+
+**One function, many tables?** Nothing to wire — triggers declare *who
+calls* a function; tables are just data your code opens by name, as many as
+you like:
+
+```python
+ddb = boto3.resource("dynamodb")
+orders    = ddb.Table(os.environ["ORDERS_TABLE"])
+customers = ddb.Table(os.environ["CUSTOMERS_TABLE"])
+```
+
+```yaml
+functions:
+  createOrder:
+    env:
+      ORDERS_TABLE: orders
+      CUSTOMERS_TABLE: customers
+```
+
+`pulse add table` writes that env line for you with `--function`:
+
+```bash
+pulse add table customers --pk email --function createOrder
+```
+
+Repeat `--function` for several functions; on an already-declared table it
+wires env only. Reading names from `env:` instead of hardcoding
+`"orders"` is a deploy habit, not a pulse rule — in real AWS, table names usually carry the stage
+(`orders-dev`, `orders-prod`), so code takes them from env and runs
+unchanged everywhere. Locally either style works. (One real-AWS difference:
+there, each function also needs IAM permission per table — locally
+everything is allowed.)
 
 **Worked example — GET an order by id (route + table together)**
 
@@ -264,25 +412,28 @@ The route (`pulse.yaml`):
 
 ```yaml
 triggers:
-  - { type: http, method: GET, path: "/orders/{id}", function: api }
+  - { type: http, method: GET, path: "/orders/{id}", function: getOrder }
 ```
 
-The handler (`services/api/src/api.py`):
+The handler — this is literally `services/get-order/handler.py` in the
+template:
 
 ```python
-import json, os
+import json
+import os
+
 import boto3
 
-_table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
+table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
+
 
 def handler(event, context):
-    order_id = event["pathParameters"]["id"]        # the {id} from the URL
-    item = _table.get_item(Key={"id": order_id}).get("Item")
+    order_id = event["pathParameters"]["id"]  # the {id} from the URL
+    item = table.get_item(Key={"id": order_id}).get("Item")
     if not item:
-        return {"statusCode": 404,
-                "body": json.dumps({"error": f"order {order_id} not found"})}
-    return {"statusCode": 200,
-            "body": json.dumps(item, default=str)}  # default=str: DynamoDB numbers arrive as Decimal
+        return {"statusCode": 404, "body": json.dumps({"error": f"order {order_id} not found"})}
+    # default=str: DynamoDB numbers come back as Decimal
+    return {"statusCode": 200, "body": json.dumps(item, default=str)}
 ```
 
 Try it:
@@ -331,18 +482,19 @@ config serving:
 
 ### 3.11 Scaffolding the rest — `pulse add`
 
-You already met `pulse add function` (3.4). The same command wires
-everything else, without hand-editing yaml (your comments survive; changes
-apply live if the engine runs):
+You've met the whole family now — this is the recap. `pulse add` edits
+`pulse.yaml` for you (your comments survive; changes apply live if the
+engine runs):
 
 ```bash
-pulse add route POST /notify --function notifier  # wire a URL to a function
-pulse add queue notifications --worker notifier   # queue + wiring (+ creates the function if missing)
-pulse add table customers --pk email              # declare a table
+pulse add function notifier                       # code + yaml entry        (3.4)
+pulse add route POST /notify --function notifier  # wire a URL to a function (3.5)
+pulse add queue emails --worker send-email        # queue + worker + wiring  (3.6)
+pulse add table customers --pk email              # declare a table          (3.8)
 ```
 
-- One function may serve many triggers — `notifier` above handles both the
-  route and the queue.
+- One function may serve many triggers — `notifier` above could handle a
+  route *and* a queue.
 - Hand-editing `pulse.yaml` works exactly as well; `pulse add` is just the
   shortcut.
 
@@ -418,22 +570,29 @@ api:
   port: 3000                     # optional; default 3000
 
 functions:                       # ── your code ──
-  api:
+  createOrder:
     runtime: python3.12          # nodejs18/20/22.x or python3.9–3.12
-    handler: src.api.handler     # python: module.function · node: file.export
-    codeDir: services/api        # folder with the code
+    handler: handler.handler     # python: module.function · node: file.export
+    codeDir: services/create-order   # folder with the code
     timeout: 10                  # seconds, enforced (default 3)
     memory: 256                  # MB, informational locally (default 128)
     env:                         # your app config
       TABLE_NAME: orders
+      QUEUE_NAME: order-events
+  getOrder:
+    runtime: python3.12
+    handler: handler.handler
+    codeDir: services/get-order
+    env: { TABLE_NAME: orders }
   worker:
     runtime: python3.12
-    handler: handler.handle
+    handler: handler.handler
     codeDir: services/worker
+    env: { TABLE_NAME: orders }
 
 triggers:                        # ── what runs them ──
-  - { type: http, method: POST, path: /orders, function: api }
-  - { type: http, method: GET,  path: "/orders/{id}", function: api }
+  - { type: http, method: POST, path: /orders, function: createOrder }
+  - { type: http, method: GET,  path: "/orders/{id}", function: getOrder }
   - { type: sqs,  queue: order-events, function: worker, batchSize: 10 }
 
 resources:                       # ── only what you use ──
@@ -456,14 +615,23 @@ An app with no queues or tables simply omits `resources` entirely.
 
 | Command | Does |
 |---|---|
-| `pulse init <name> [-t tpl] [--lang node\|python]` | New project, dependencies included |
+| `pulse init` | New project — no arguments asks three quick questions |
+| `pulse init <name> [-t tpl] [--lang node\|python]` | Same, fully scripted (CI-safe) |
 | `pulse start [--port N]` / `pulse stop` | Local cloud on / off |
 | `pulse add function\|route\|queue\|table …` | Scaffold pieces, applied live |
+| `pulse add table <name> --function <fn>` | Declare table + wire its name into a function's env |
 | `pulse invoke <fn> [-d json \| -e file]` | Run a function synchronously |
 | `pulse send <queue> <body> [--delay N]` | Queue a job |
 | `pulse logs <fn> [-n N] [-f]` | History / live logs |
 | `pulse list` / `pulse validate` | See everything / check config |
 | `-C <dir>` on any command | Act on a project from anywhere |
+
+Every command answers `--help` with examples. **Tab completion** (function,
+queue, and template names complete from *your* project):
+
+```bash
+echo 'source <(pulse completion zsh)' >> ~/.zshrc   # bash/fish/powershell work too
+```
 
 ---
 

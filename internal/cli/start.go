@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pulse/internal/engine"
+	"pulse/internal/gateway"
 	"pulse/internal/store"
 	"pulse/internal/version"
 )
@@ -70,6 +71,11 @@ func runStart(_ *cobra.Command, _ []string) error {
 			fmt.Printf("  %-9s  %s %s → %s\n", label, rt.Method, rt.Path, rt.Function)
 			label = ""
 		}
+		label = "try"
+		for _, tl := range tryLines(eng.Routes(), apiURL) {
+			fmt.Printf("  %-9s  %s\n", label, tl)
+			label = ""
+		}
 	}
 	fmt.Printf("  aws        %s (%s)\n", eng.AWSURL(), strings.Join(eng.AWSServices(), ", "))
 	fmt.Printf("  control    %s\n", eng.ControlAddr())
@@ -111,4 +117,44 @@ func runStart(_ *cobra.Command, _ []string) error {
 	}
 	fmt.Println("✓ stopped")
 	return nil
+}
+
+// tryLines renders up to three copy-paste curl commands for the banner —
+// GET routes first (always safe to paste), then one write route with a
+// placeholder body. Path params get sample values so the line stays
+// runnable.
+func tryLines(routes []gateway.RouteInfo, apiURL string) []string {
+	host := strings.TrimPrefix(apiURL, "http://")
+	var gets, writes []string
+	for _, rt := range routes {
+		path := samplePath(rt.Path)
+		switch rt.Method {
+		case "GET", "ANY":
+			gets = append(gets, fmt.Sprintf("curl %s%s", host, path))
+		default:
+			writes = append(writes, fmt.Sprintf("curl -X %s %s%s -d '{\"key\":\"value\"}'", rt.Method, host, path))
+		}
+	}
+	out := append(writes, gets...) // a write first: it makes something happen
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}
+
+// samplePath makes a route path pasteable: {id} → 123, {proxy+} → hello.
+func samplePath(path string) string {
+	out := path
+	for {
+		i := strings.IndexByte(out, '{')
+		j := strings.IndexByte(out, '}')
+		if i < 0 || j < i {
+			return out
+		}
+		sample := "123"
+		if strings.HasSuffix(out[i:j], "+") {
+			sample = "hello"
+		}
+		out = out[:i] + sample + out[j+1:]
+	}
 }

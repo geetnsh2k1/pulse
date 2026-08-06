@@ -32,7 +32,7 @@
 ### Acceptance demo (the literal script that defines "done")
 
 ```bash
-pulse init order-demo --template order-pipeline
+pulse init order-demo --template api-and-worker
 cd order-demo && pulse start              # engine ready < 1s, API on :3000
 
 curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'
@@ -188,7 +188,7 @@ pulse/
   runtimes/node/bootstrap.mjs
   runtimes/python/bootstrap.py
   ui/                        # M5: Tauri 2 + React + TS (Vite)
-  examples/{node-api,order-pipeline}/
+  examples/{hello,api-and-worker}/
   docs/
 ```
 
@@ -321,6 +321,80 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-08-05 — DX Round B: real-example templates + placeholder-teaching
+  args.** Two new templates, both `--lang node|python`: **todo-api** (4
+  single-purpose fns — create/list/complete/delete on one table;
+  completeTodo teaches ConditionExpression→404, delete teaches idempotent
+  204) and **webhook-relay** (receiveWebhook 202-acks and queues;
+  processWebhook raise-to-retry → 3 attempts → DLQ; no table — resources
+  hold only what the app uses). Template lineup now reads as a learning
+  path: hello → todo-api → webhook-relay → api-and-worker. Also from
+  Geetansh's live confusion ("logs <function> — which function?"):
+  invoke/logs/send got Long text defining the placeholder, and bare
+  `pulse logs` / `pulse invoke` / `pulse send` now answer with the
+  project's own names ("which function? this project has: …") instead of
+  cobra's arity error (internal/cli/args.go). Verified live, python +
+  node: full todo CRUD incl. 404 + 204 paths; webhook happy path (202 →
+  processed, 🎉 fired on the fresh project's first job) and failure path
+  verbatim (3 attempts 5s apart → ☠ → dlq depth 1 in pulse list). 8/8
+  template×lang render-validate matrix in CI; full suite -race green;
+  bin/pulse rebuilt.
+
+- **2026-08-05 — DX Round A: interactive + self-teaching CLI (Geetansh:
+  "make pulse interactive and fun, don't complicate").** (1) Template
+  renamed `order-pipeline` → **`api-and-worker`** (Geetansh's pick over
+  coffee-shop/orders-app), description de-jargoned ("CRUD API + background
+  worker + table — the full offline demo"); (2) bare `pulse init` on a TTY
+  runs a three-question wizard (stdlib prompts via cmd.InOrStdin, testable;
+  real TTY check via x/term — ModeCharDevice false-positives on /dev/null;
+  PULSE_ASSUME_TTY=1 for tests; non-TTY keeps the usage error, CI-safe);
+  (3) every leaf command gained Example: blocks (examples.go), add table
+  gained real Long text; (4) dynamic tab completion (complete.go):
+  invoke/logs complete function names with runtime·codeDir descriptions,
+  send completes queues, --function/--worker flags complete functions,
+  init --template/--lang complete from the registry; (5) `pulse add table
+  --function` wires <NAME>_TABLE env into functions (repeatable,
+  exists-means-wire-only, idempotent, runtime-aware code hint; first CLI
+  test file add_test.go, 6 tests); (6) banner **try** lines — copy-paste
+  curls per route ({id}→123, {proxy+}→hello, write routes get a placeholder
+  body); (7) one-time **🎉 first background job processed** console line
+  (esm.CelebrateOK → engine KV `celebrated_first_job`, once per project
+  forever, verified across restarts). 14 packages -race green. Wizard,
+  completion (`pulse __complete`), table wiring, banner, and 🎉 all
+  live-verified. Resolved same day: node-api/python-api merged into
+  one `hello` template with --lang variants.
+
+- **2026-08-04 — Guide: worker story rebuilt from a zero-knowledge POV
+  (Geetansh: "queue worker is confusing… please work on it").** §3.6 is now
+  a do-it-yourself arc — why background jobs → one `pulse add queue emails
+  --worker send-email` → send a job → *read the `Records` envelope in the
+  console* → 3-line loop makes it a real worker → "different jobs, different
+  workers" pattern. §3.5 no longer forward-references workers/`Records`
+  (invoke stays on the reader's own `notifier`; the test-a-worker-alone tip
+  moved into §3.6 where it has context). §3.5 also gained the create→invoke→
+  curl bridge (add route + curl right after invoking). §3.7 points at
+  `--dlq`, §3.11 became a recap. Every command/console line in §3.6
+  live-verified in a scratch project, including whole-file copy-paste of the
+  worker snippet. Doc rule confirmed twice now: **no forward references** —
+  a section may only use concepts already taught. Same day: §3.8 tables
+  rebuilt command-first (`add table` + verbatim output, sort-key bullet,
+  tables-don't-auto-create-because-you-choose-the-key, and a "one function,
+  many tables" block — tables aren't wired to functions; env-name convention
+  explained, real-AWS IAM gap noted). Both commands incl. `--sk createdAt:N`
+  live-verified.
+
+- **2026-07-30 — Sample code simplification (Geetansh: "too complex for a
+  first-time user").** `pulse add function` starters are now the classic
+  5-line Lambda shape (print + return; the multi-trigger teaching moved to
+  the guide). api-and-worker split into three single-purpose functions —
+  createOrder / getOrder / worker — one short file each (~30/17/33 lines),
+  top-level boto3/SDK imports like AWS docs, no graceful-degrade plumbing
+  (init auto-install made it redundant), worker uses raise-to-retry (the
+  standard Lambda idiom) instead of batchItemFailures. Handler spec unified
+  to `handler.handler`. getOrder is byte-for-byte the guide's §3.8 worked
+  example. Guide synced (§3.2/3.3/3.4/3.5/3.7/3.8/§4). Live-verified:
+  golden loop + retry demo on the new template.
+
 - **2026-07-30 — DX hardening pass (Geetansh's "make it feel easy" directive)
   complete.** Fresh-eyes audit confirmed the friction; all of it fixed and
   live-verified: (1) **zero-setup init** — `pulse init` now installs
@@ -363,7 +437,7 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
   the desktop-app decision point).
 
 - **2026-07-29 — Template language variants.** `pulse init --template
-  order-pipeline --lang node|python` scaffolds the golden app fully in either
+  api-and-worker --lang node|python` scaffolds the golden app fully in either
   language (Node: SDK v3 api + Node worker; Python: boto3 api + Python
   worker; both degrade gracefully until the SDK is installed). Mechanism:
   `_<lang>/` variant directories in templates, filtered at render; templates
@@ -395,7 +469,7 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
   cookies, and 500/502 error semantics; 10MB body cap; access-log lines in the
   start console and in the target function's logs; every request recorded as a
   replayable http event sharing the invocation's request id. Live-verified:
-  201/404/422/500 flows and hot-reload-while-serving on the order-pipeline
+  201/404/422/500 flows and hot-reload-while-serving on the api-and-worker
   template. Next: **Phase 3 — Process Background Jobs (SQS)**.
 
 - **2026-07-29 — Roadmap reshaped, Phase 1 complete.** Per Geetansh's direction,
@@ -410,7 +484,7 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
   retirement. Live-verified: warm invoke ~25ms wall via CLI, AWS-shaped error
   docs with user-code stack traces, mid-session hot reload, SSE streaming.
   One data race (timeout killer vs cmd.Start) caught by `-race` and fixed via
-  an atomically-published process handle. order-pipeline template reshaped to
+  an atomically-published process handle. api-and-worker template reshaped to
   the golden app (api + worker). Next: **Phase 2 — Build an API**.
 
 - **2026-07-29 — M0 complete.** Repo scaffold, `pulse` CLI (init/start/stop/list/

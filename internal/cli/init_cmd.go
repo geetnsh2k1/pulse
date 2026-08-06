@@ -22,22 +22,42 @@ var (
 )
 
 var initCmd = &cobra.Command{
-	Use:   "init <name>",
+	Use:   "init [name]",
 	Short: "Create a new pulse project from a starter template",
-	Long: `Create a new pulse project. <name> becomes the directory and project name;
-use "." to initialize the current (empty) directory.`,
-	Args: cobra.MaximumNArgs(1),
+	Long: `Create a new pulse project.
+
+  pulse init             no arguments: asks name, template, and language
+  pulse init <name>      creates <name> with the default template (hello)
+  pulse init --list      shows the available templates
+
+<name> becomes both the folder and the project name; use "." for the
+current (empty) directory.`,
+	Args: func(_ *cobra.Command, args []string) error {
+		if len(args) > 1 {
+			return fmt.Errorf("init takes one name, got %d (%s) — flag values need their flag, e.g. --template hello",
+				len(args), strings.Join(args, " "))
+		}
+		return nil
+	},
 	RunE: runInit,
 }
 
 func init() {
-	initCmd.Flags().StringVarP(&flagTemplate, "template", "t", "node-api", "starter template (see --list)")
-	initCmd.Flags().StringVar(&flagLang, "lang", "node", "language for templates with variants (node|python)")
+	initCmd.Flags().StringVarP(&flagTemplate, "template", "t", "hello", "starter template (see --list)")
+	initCmd.Flags().StringVar(&flagLang, "lang", "node", "language: node or python")
 	initCmd.Flags().BoolVar(&flagListTemplate, "list", false, "list available templates and exit")
 	initCmd.Flags().BoolVar(&flagNoInstall, "no-install", false, "skip automatic dependency installation")
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	// `pulse init -t --list` parses "--list" as -t's value — catch the
+	// mistake and teach, instead of failing on a template named "--list".
+	if strings.HasPrefix(flagTemplate, "-") {
+		return fmt.Errorf("--template needs a template name (you passed %q) — run `pulse init --list` to see them", flagTemplate)
+	}
+	if strings.HasPrefix(flagLang, "-") {
+		return fmt.Errorf("--lang needs a language, node or python (you passed %q)", flagLang)
+	}
 	if flagListTemplate {
 		fmt.Println("available templates:")
 		for _, t := range templates.List() {
@@ -45,7 +65,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			if len(t.Variants) > 0 {
 				name += " (--lang " + strings.Join(t.Variants, "|") + ")"
 			}
-			fmt.Printf("  %-34s %s\n", name, t.Description)
+			fmt.Printf("  %-36s %s\n", name, t.Description)
 		}
 		return nil
 	}
@@ -55,7 +75,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("template %q has no language variants — drop the --lang flag", flagTemplate)
 	}
 	if len(args) == 0 {
-		return errors.New("usage: pulse init <name> (or pulse init --list to see templates)")
+		if !stdinIsInteractive() {
+			return errors.New("usage: pulse init <name> (or pulse init --list to see templates)")
+		}
+		wizardName, err := initWizard(cmd)
+		if err != nil {
+			return err
+		}
+		args = []string{wizardName}
 	}
 
 	name := args[0]
@@ -112,7 +139,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  cd %s\n", name)
 	}
 	fmt.Println("  pulse start")
-	if flagTemplate == "order-pipeline" {
+	if flagTemplate == "api-and-worker" {
 		fmt.Println(`  curl -X POST localhost:3000/orders -H 'content-type: application/json' -d '{"sku":"A1","qty":2}'`)
 		fmt.Println(`  curl localhost:3000/orders/<id-from-above>    # → status "processed", via queue + worker + table`)
 	} else {

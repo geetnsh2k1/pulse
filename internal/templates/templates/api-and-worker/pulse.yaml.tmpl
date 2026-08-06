@@ -1,0 +1,63 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  createOrder:                   # POST /orders
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/create-order
+    timeout: 10
+    env:
+      TABLE_NAME: orders
+      QUEUE_NAME: order-events
+  getOrder:                      # GET /orders/{id}
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/get-order
+    timeout: 10
+    env:
+      TABLE_NAME: orders
+  worker:                        # processes queued orders
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/worker
+    timeout: 30
+    env:
+      TABLE_NAME: orders
+
+triggers:
+  - type: http
+    method: POST
+    path: /orders
+    function: createOrder
+  - type: http
+    method: GET
+    path: "/orders/{id}"
+    function: getOrder
+  - type: sqs
+    queue: order-events
+    function: worker
+    batchSize: 10
+
+resources:
+  tables:
+    orders:
+      pk: id                 # partition key (shorthand: type defaults to S)
+  queues:
+    order-events:
+      dlq: order-events-dlq
+      maxReceiveCount: 3
+      visibilityTimeout: 5   # short so local retries are snappy to watch
+    order-events-dlq: {}

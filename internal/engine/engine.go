@@ -68,6 +68,9 @@ type Engine struct {
 	shutdownOnce sync.Once
 	shutdownCh   chan struct{}
 	serveErrCh   chan error
+
+	// celebrateMu serializes the once-ever first-job console line.
+	celebrateMu sync.Mutex
 }
 
 func New(cfg *config.Config, st *store.Store) *Engine {
@@ -172,6 +175,7 @@ func (e *Engine) startSubsystems(cfg *config.Config) error {
 	var pollers *esm.Poller
 	if hasTrigger(cfg, "sqs") {
 		pollers = esm.New(cfg, sqs, mgr, e.sink, e.event)
+		pollers.CelebrateOK = e.celebrateFirstJob
 		pollers.Start()
 	}
 
@@ -387,6 +391,21 @@ func (e *Engine) event(msg string) {
 	if e.OnEvent != nil {
 		e.OnEvent(msg)
 	}
+}
+
+// celebrateFirstJob prints a one-time line the first time this project ever
+// processes a background job successfully — the aha moment of the async
+// loop. The KV flag makes it once per project, forever.
+func (e *Engine) celebrateFirstJob() {
+	e.celebrateMu.Lock()
+	defer e.celebrateMu.Unlock()
+	if _, ok, err := e.st.GetKV("celebrated_first_job"); ok || err != nil {
+		return
+	}
+	if err := e.st.SetKV("celebrated_first_job", "1"); err != nil {
+		return
+	}
+	e.event("🎉 first background job processed — your async loop works end to end")
 }
 
 func (e *Engine) onCodeChange(functions []string, reason string) {

@@ -1,0 +1,35 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  receiveWebhook:                # POST /webhooks — ack fast, queue the work
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/receive-webhook
+    env:
+      QUEUE_NAME: webhooks
+  processWebhook:                # works the queue; raise = retry
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+{{- else}}
+    runtime: nodejs20.x
+{{- end}}
+    handler: handler.handler
+    codeDir: services/process-webhook
+    timeout: 5
+
+triggers:
+  - { type: http, method: POST, path: /webhooks, function: receiveWebhook }
+  - { type: sqs, queue: webhooks, function: processWebhook }
+
+resources:
+  queues:
+    webhooks:
+      dlq: webhooks-dlq          # after 3 failed attempts, deliveries land here
+      maxReceiveCount: 3
+      visibilityTimeout: 5       # retry pace in seconds (demo-fast; raise in real apps)
+    webhooks-dlq: {}

@@ -13,8 +13,8 @@ import (
 // is broken for every new user, so CI enforces this invariant forever.
 func TestAllTemplatesRenderValidProjects(t *testing.T) {
 	all := List()
-	if len(all) < 3 {
-		t.Fatalf("expected at least 3 templates, got %d", len(all))
+	if len(all) < 2 {
+		t.Fatalf("expected at least 2 templates, got %d", len(all))
 	}
 	for _, info := range all {
 		variants := info.Variants
@@ -61,22 +61,29 @@ func TestAllTemplatesRenderValidProjects(t *testing.T) {
 
 func TestVariantFilesMatchLanguage(t *testing.T) {
 	dst := t.TempDir()
-	if _, err := Render("order-pipeline", dst, Data{Project: "py-app", Lang: "python"}); err != nil {
+	if _, err := Render("api-and-worker", dst, Data{Project: "py-app", Lang: "python"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dst, "services", "api", "src", "api.py")); err != nil {
-		t.Error("python variant missing api.py")
-	}
-	if _, err := os.Stat(filepath.Join(dst, "services", "api", "src", "api.mjs")); !os.IsNotExist(err) {
-		t.Error("python variant leaked node files")
+	for _, fn := range []string{"create-order", "get-order", "worker"} {
+		if _, err := os.Stat(filepath.Join(dst, "services", fn, "handler.py")); err != nil {
+			t.Errorf("python variant missing services/%s/handler.py", fn)
+		}
+		if _, err := os.Stat(filepath.Join(dst, "services", fn, "handler.mjs")); !os.IsNotExist(err) {
+			t.Errorf("python variant leaked node files into services/%s", fn)
+		}
 	}
 
 	dst = t.TempDir()
-	if _, err := Render("order-pipeline", dst, Data{Project: "node-app", Lang: "node"}); err != nil {
+	if _, err := Render("api-and-worker", dst, Data{Project: "node-app", Lang: "node"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dst, "services", "worker", "handler.mjs")); err != nil {
-		t.Error("node variant missing worker handler.mjs")
+	for _, fn := range []string{"create-order", "get-order", "worker"} {
+		if _, err := os.Stat(filepath.Join(dst, "services", fn, "handler.mjs")); err != nil {
+			t.Errorf("node variant missing services/%s/handler.mjs", fn)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, "package.json")); err != nil {
+		t.Error("node variant missing root package.json")
 	}
 }
 
@@ -84,10 +91,10 @@ func TestRenderErrors(t *testing.T) {
 	if _, err := Render("nope", t.TempDir(), Data{Project: "x"}); err == nil {
 		t.Fatal("want error for unknown template")
 	}
-	if _, err := Render("order-pipeline", t.TempDir(), Data{Project: "x", Lang: "rust"}); err == nil {
+	if _, err := Render("api-and-worker", t.TempDir(), Data{Project: "x", Lang: "rust"}); err == nil {
 		t.Fatal("want error for unknown variant")
 	}
-	if _, err := Render("order-pipeline", t.TempDir(), Data{Project: "x"}); err == nil {
+	if _, err := Render("api-and-worker", t.TempDir(), Data{Project: "x"}); err == nil {
 		t.Fatal("want error when a variant template gets no lang")
 	}
 }

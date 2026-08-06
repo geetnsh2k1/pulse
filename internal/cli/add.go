@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,13 +28,14 @@ running — applied live.`,
 }
 
 var (
-	flagAddRuntime string
-	flagAddDir     string
-	flagAddFn      string
-	flagAddWorker  string
-	flagAddPK      string
-	flagAddSK      string
-	flagAddDLQ     bool
+	flagAddRuntime  string
+	flagAddDir      string
+	flagAddFn       string
+	flagAddWorker   string
+	flagAddPK       string
+	flagAddSK       string
+	flagAddDLQ      bool
+	flagAddTableFns []string
 )
 
 var addFunctionCmd = &cobra.Command{
@@ -73,73 +75,30 @@ func init() {
 	addQueueCmd.Flags().BoolVar(&flagAddDLQ, "dlq", false, "also create <name>-dlq with maxReceiveCount 3")
 	addTableCmd.Flags().StringVar(&flagAddPK, "pk", "id", "partition key, name[:TYPE] (types: S, N, B)")
 	addTableCmd.Flags().StringVar(&flagAddSK, "sk", "", "optional sort key, name[:TYPE]")
+	addTableCmd.Flags().StringArrayVar(&flagAddTableFns, "function", nil, "wire the table name into this function's env (repeatable)")
 	addCmd.AddCommand(addFunctionCmd, addRouteCmd, addQueueCmd, addTableCmd)
 }
 
-const nodeStarter = `// %s — a pulse function. Edit freely and save: pulse hot-reloads it.
-//
-// The same function can serve several triggers; branch on the event shape.
-// Everything you console.log shows in the engine console and in
-// ` + "`pulse logs %s`" + `.
-export const handle = async (event, context) => {
-  // Queue batch (an sqs trigger delivered messages)
-  if (event.Records) {
-    for (const record of event.Records) {
-      const job = JSON.parse(record.body || "{}");
-      console.log("job received:", JSON.stringify(job));
-      // do the work here; push {itemIdentifier: record.messageId} into
-      // batchItemFailures below to retry just this message
-    }
-    return { batchItemFailures: [] };
-  }
-
-  // HTTP request (an http trigger routed it here)
-  if (event.requestContext?.http) {
-    console.log("http " + event.requestContext.http.method + " " + event.rawPath);
-    return {
-      statusCode: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ok: true }),
-    };
-  }
-
-  // Direct run: pulse invoke %s -d '{...}'
-  console.log("invoked with:", JSON.stringify(event).slice(0, 200));
+const nodeStarter = `// %s — edit this file and save; pulse hot-reloads it.
+// "event" is whatever triggered you: an HTTP request, a queue batch, or
+// the JSON you pass to pulse invoke. Logs: ` + "`pulse logs %s`" + `
+export const handler = async (event, context) => {
+  console.log("received:", JSON.stringify(event));
   return { ok: true };
 };
 `
 
-const pythonStarter = `"""%s — a pulse function. Edit freely and save: pulse hot-reloads it.
+const pythonStarter = `"""%s — edit this file and save; pulse hot-reloads it.
 
-The same function can serve several triggers; branch on the event shape.
-Everything you print() shows in the engine console and ` + "`pulse logs %s`" + `.
+"event" is whatever triggered you: an HTTP request, a queue batch, or the
+JSON you pass to pulse invoke. Logs: ` + "`pulse logs %s`" + `
 """
 
 import json
 
 
-def handle(event, context):
-    # Queue batch (an sqs trigger delivered messages)
-    if "Records" in event:
-        for record in event["Records"]:
-            job = json.loads(record.get("body") or "{}")
-            print("job received:", json.dumps(job))
-            # do the work here; append {"itemIdentifier": record["messageId"]}
-            # to batchItemFailures below to retry just this message
-        return {"batchItemFailures": []}
-
-    # HTTP request (an http trigger routed it here)
-    if "requestContext" in event:
-        http = event["requestContext"].get("http", {})
-        print("http", http.get("method"), event.get("rawPath"))
-        return {
-            "statusCode": 200,
-            "headers": {"content-type": "application/json"},
-            "body": json.dumps({"ok": True}),
-        }
-
-    # Direct run: pulse invoke %s -d '{...}'
-    print("invoked with:", json.dumps(event)[:200])
+def handler(event, context):
+    print("received:", json.dumps(event))
     return {"ok": True}
 `
 
@@ -165,9 +124,9 @@ func scaffoldFunctionFiles(cfg *config.Config, name, runtimeFlag, dirFlag string
 	if err := os.MkdirAll(absDir, 0o755); err != nil {
 		return nil, err
 	}
-	handlerFile, starter := "handler.mjs", fmt.Sprintf(nodeStarter, name, name, name)
+	handlerFile, starter := "handler.mjs", fmt.Sprintf(nodeStarter, name, name)
 	if family == "python" {
-		handlerFile, starter = "handler.py", fmt.Sprintf(pythonStarter, name, name, name)
+		handlerFile, starter = "handler.py", fmt.Sprintf(pythonStarter, name, name)
 	}
 	handlerPath := filepath.Join(absDir, handlerFile)
 	if _, err := os.Stat(handlerPath); os.IsNotExist(err) {
@@ -181,7 +140,7 @@ func scaffoldFunctionFiles(cfg *config.Config, name, runtimeFlag, dirFlag string
 func (s *scaffoldedFn) yamlEntry() map[string]any {
 	return map[string]any{
 		"runtime": s.runtime,
-		"handler": "handler.handle",
+		"handler": "handler.handler",
 		"codeDir": s.dir,
 	}
 }
@@ -329,11 +288,30 @@ func runAddQueue(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runAddTable(_ *cobra.Command, args []string) error {
+func runAddTable(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	cfg, err := loadProject()
 	if err != nil {
 		return err
+	}
+
+	// --function wires the table's name into each function's env — the one
+	// piece of glue code needs. Validate the names before touching yaml.
+	for _, fn := range flagAddTableFns {
+		if _, ok := cfg.Functions[fn]; !ok {
+			return fmt.Errorf("unknown function %q — functions in this project: %s",
+				fn, strings.Join(functionNames(cfg), ", "))
+		}
+	}
+
+	_, tableExists := cfg.Resources.Tables[name]
+	if tableExists {
+		if cmd.Flags().Changed("pk") || flagAddSK != "" {
+			return fmt.Errorf("table %q already in pulse.yaml — its key can't be changed here, edit the file directly", name)
+		}
+		if len(flagAddTableFns) == 0 {
+			return fmt.Errorf("table %q already in pulse.yaml", name)
+		}
 	}
 
 	pkNode, err := keyNode(flagAddPK)
@@ -348,25 +326,98 @@ func runAddTable(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	envName := envVarForTable(name)
+	var wired, skipped []string
 	err = config.EditYAML(cfg.Path, func(root *yaml.Node) error {
-		resources := config.TopMap(root, "resources")
-		tables := config.TopMap(resources, "tables")
-		if config.HasMapKey(tables, name) {
-			return fmt.Errorf("table %q already in pulse.yaml", name)
+		if !tableExists {
+			resources := config.TopMap(root, "resources")
+			tables := config.TopMap(resources, "tables")
+			entry := map[string]any{"pk": pkNode}
+			if skNode != nil {
+				entry["sk"] = skNode
+			}
+			if err := config.SetMapEntry(tables, name, entry); err != nil {
+				return err
+			}
 		}
-		entry := map[string]any{"pk": pkNode}
-		if skNode != nil {
-			entry["sk"] = skNode
+		functions := config.TopMap(root, "functions")
+		for _, fn := range flagAddTableFns {
+			// Already pointing at this table under any env name? Done.
+			if existing := envVarPointingAt(cfg.Functions[fn].Env, name); existing != "" {
+				skipped = append(skipped, fmt.Sprintf("%s already has %s=%s", fn, existing, name))
+				continue
+			}
+			env := config.TopMap(config.TopMap(functions, fn), "env")
+			if err := config.SetMapEntry(env, envName, name); err != nil {
+				return err
+			}
+			wired = append(wired, fn)
 		}
-		return config.SetMapEntry(tables, name, entry)
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✓ added table %s (pk %s%s)\n", name, flagAddPK, skSuffix())
-	fmt.Println("  your code can use it right away — no schema for the other columns: just write items")
+
+	if tableExists {
+		fmt.Printf("✱ table %s already declared — wiring env only\n", name)
+	} else {
+		fmt.Printf("✓ added table %s (pk %s%s)\n", name, flagAddPK, skSuffix())
+		fmt.Println("  your code can use it right away — no schema for the other columns: just write items")
+	}
+	for _, fn := range wired {
+		fmt.Printf("  wired  %s env %s=%s\n", fn, envName, name)
+	}
+	for _, s := range skipped {
+		fmt.Printf("  ✱ %s — skipped\n", s)
+	}
+	if len(wired) > 0 {
+		fmt.Printf("  code   %s\n", tableCodeHint(cfg, wired[0], envName))
+	}
 	printAppliesLive(cfg.Root)
 	return nil
+}
+
+// envVarForTable derives the conventional env var name: customers →
+// CUSTOMERS_TABLE, order-events → ORDER_EVENTS_TABLE.
+func envVarForTable(table string) string {
+	up := strings.ToUpper(table)
+	up = strings.Map(func(r rune) rune {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, up)
+	return up + "_TABLE"
+}
+
+// envVarPointingAt returns the name of an env var whose value is already the
+// table name, or "".
+func envVarPointingAt(env map[string]string, table string) string {
+	for k, v := range env {
+		if v == table {
+			return k
+		}
+	}
+	return ""
+}
+
+func functionNames(cfg *config.Config) []string {
+	names := make([]string, 0, len(cfg.Functions))
+	for n := range cfg.Functions {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// tableCodeHint shows the one line of code that reads the wired env var, in
+// the language of the function it was wired into.
+func tableCodeHint(cfg *config.Config, fn, envName string) string {
+	if f, ok := cfg.Functions[fn]; ok && strings.HasPrefix(f.Runtime, "python") {
+		return fmt.Sprintf(`table = boto3.resource("dynamodb").Table(os.environ[%q])`, envName)
+	}
+	return fmt.Sprintf(`const table = process.env.%s`, envName)
 }
 
 func skSuffix() string {

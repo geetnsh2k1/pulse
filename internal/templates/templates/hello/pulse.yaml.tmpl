@@ -1,0 +1,20 @@
+project: {{.Project}}
+region: us-east-1
+
+functions:
+  hello:
+{{- if eq .Lang "python"}}
+    runtime: python3.12
+    handler: handler.handler
+{{- else}}
+    runtime: nodejs20.x
+    handler: index.handler
+{{- end}}
+    codeDir: functions/hello
+    timeout: 5
+
+triggers:
+  - type: http
+    method: GET
+    path: /hello
+    function: hello

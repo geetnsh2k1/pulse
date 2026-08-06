@@ -29,7 +29,7 @@ var sendCmd = &cobra.Command{
 With the engine running, delivery to the queue's function happens within a
 second or two. With it stopped, the message waits in the queue and is
 delivered on the next ` + "`pulse start`" + `.`,
-	Args: cobra.RangeArgs(1, 2),
+	Args: queueFirstArg("send", 2),
 	RunE: runSend,
 }
 

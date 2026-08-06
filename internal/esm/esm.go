@@ -29,6 +29,10 @@ type Poller struct {
 	sink  *logs.Sink
 	event func(string)
 
+	// CelebrateOK, when set, is called after every fully-successful batch —
+	// the engine uses it to print a one-time "first background job" line.
+	CelebrateOK func()
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -126,6 +130,9 @@ func (p *Poller) deliver(t *config.Trigger, msgs []sqs.Message) {
 		p.event(line)
 	}
 	p.sink.System(t.Function, requestID, line, time.Now().UnixMilli())
+	if outcome == "ok" && p.CelebrateOK != nil {
+		p.CelebrateOK()
+	}
 }
 
 // buildEvent renders the Lambda SQS event shape (note: lowercased keys,

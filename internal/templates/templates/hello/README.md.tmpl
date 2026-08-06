@@ -1,0 +1,25 @@
+# pulse starter: hello ({{.Lang}})
+
+One function behind `GET /hello`. The smallest possible pulse app —
+no queues, no tables, no schema: `resources` is only ever needed for what
+you actually use.
+
+```bash
+pulse start
+curl "localhost:3000/hello?name=you"
+```
+
+Then make it yours: edit {{if eq .Lang "python"}}`functions/hello/handler.py`{{else}}`functions/hello/index.mjs`{{end}} and save — the next
+request runs the new code, no restart. `pulse logs hello -f` streams what
+it prints.
+
+Grow it with one command at a time:
+
+```bash
+pulse add function <name>                 # another function
+pulse add route POST /things --function <name>
+pulse add queue jobs --worker <name>      # background jobs
+pulse add table things --pk id            # persistence
+```
+
+Prefer the other language? `pulse init <name> --template hello --lang node|python`

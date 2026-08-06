@@ -30,7 +30,7 @@ runtimes, desktop app.
 
 ```bash
 make build                                  # → bin/pulse
-bin/pulse init shop --template order-pipeline --lang python   # deps auto-install
+bin/pulse init shop --template api-and-worker --lang python   # deps auto-install
 cd shop
 pulse start                                 # API + queues + tables + live apply
 curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'  # → 201 "pending"

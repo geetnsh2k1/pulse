@@ -30,9 +30,10 @@ type Info struct {
 }
 
 var descriptions = map[string]string{
-	"node-api":       "Minimal Node.js function behind GET /hello (default)",
-	"python-api":     "Minimal Python function behind GET /hello",
-	"order-pipeline": "Full MVP demo: API → SQS worker (DynamoDB at phase 4)",
+	"hello":          "One function behind GET /hello — the smallest start",
+	"todo-api":       "Real CRUD on one table — create, list, complete, delete",
+	"webhook-relay":  "Receive webhooks, ack fast, process with retries + DLQ",
+	"api-and-worker": "CRUD API + background worker + table — the full offline demo",
 }
 
 // List returns the available templates, sorted by name.

@@ -23,8 +23,12 @@ var (
 var logsCmd = &cobra.Command{
 	Use:   "logs <function>",
 	Short: "Show a function's recent logs, or follow them live",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runLogs,
+	Long: `Show what one of your functions printed, newest last.
+
+<function> is the function's name from pulse.yaml — the same names that
+` + "`pulse list`" + `, the start banner, and Tab completion show.`,
+	Args: oneFunctionArg("logs"),
+	RunE: runLogs,
 }
 
 func init() {

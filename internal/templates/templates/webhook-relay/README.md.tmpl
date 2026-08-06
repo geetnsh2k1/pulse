@@ -1,0 +1,42 @@
+# pulse starter: webhook-relay ({{.Lang}})
+
+The most common serverless pattern in the wild: receive webhooks
+(Stripe, GitHub, anything), **ack instantly**, process reliably in the
+background — with automatic retries and a dead-letter queue for the ones
+that keep failing. No table needed; `resources` holds only the queues.
+
+```
+services/receive-webhook/   POST /webhooks   → 202 immediately + queues the payload
+services/process-webhook/   webhooks queue   → does the real work; raising = retry
+```
+
+```
+sender ──▶ POST /webhooks (202 in ms) ──▶ webhooks queue ──▶ processWebhook
+                                                │ 3 failures, 5s apart
+                                                └──────────▶ webhooks-dlq
+```
+
+Try the happy path:
+
+```bash
+pulse start
+curl -X POST localhost:3000/webhooks -d '{"type":"invoice.paid","amount":42}'
+# → 202 instantly; a moment later the console shows:
+#   processWebhook | processed webhook <id> · type invoice.paid (attempt 1)
+```
+
+And the failure path — watch three attempts, then the dead-letter queue:
+
+```bash
+curl -X POST localhost:3000/webhooks -d '{"type":"bad.event","fail":true}'
+# processWebhook ! ... failed on purpose (attempt 1) …then 2, then 3, 5s apart
+# ☠ webhooks: message moved to dead-letter queue webhooks-dlq after 3 receives
+pulse list        # shows the dlq depth
+```
+
+To test the worker alone: `pulse invoke processWebhook -e events/sqs-webhook.json`.
+
+pulse points the vanilla AWS SDK at its local mocks via `AWS_ENDPOINT_URL`,
+so this code runs unmodified in real AWS.
+
+Prefer the other language? `pulse init <name> --template webhook-relay --lang node|python`

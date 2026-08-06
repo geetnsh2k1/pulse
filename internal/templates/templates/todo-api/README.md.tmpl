@@ -1,0 +1,31 @@
+# pulse starter: todo-api ({{.Lang}})
+
+A real CRUD API on one table — no queues, no schema beyond the key.
+One small file per operation:
+
+```
+services/create-todo/     POST /todos              → 201 the new todo
+services/list-todos/      GET /todos               → 200 all todos
+services/complete-todo/   POST /todos/{id}/done    → 200 updated (404 if absent)
+services/delete-todo/     DELETE /todos/{id}       → 204
+```
+
+The whole loop:
+
+```bash
+pulse start
+curl -X POST localhost:3000/todos -d '{"text":"buy milk"}'    # note the id
+curl localhost:3000/todos
+curl -X POST localhost:3000/todos/<id>/done
+curl -X DELETE localhost:3000/todos/<id>
+```
+
+Worth reading: `complete-todo` uses a **ConditionExpression** to return a
+clean 404 instead of silently creating a row — the standard trick for
+"update only if it exists". Data survives restarts; `pulse list` shows the
+item count.
+
+pulse points the vanilla AWS SDK at its local mocks via `AWS_ENDPOINT_URL`,
+so this code runs unmodified in real AWS.
+
+Prefer the other language? `pulse init <name> --template todo-api --lang node|python`

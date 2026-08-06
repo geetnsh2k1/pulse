@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /todos",
+  "rawPath": "/todos",
+  "requestContext": { "http": { "method": "POST", "path": "/todos" } },
+  "body": "{\"text\":\"buy milk\"}",
+  "isBase64Encoded": false
+}
