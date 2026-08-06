@@ -13,6 +13,7 @@ import (
 	"pulse/internal/engine"
 	"pulse/internal/logs"
 	"pulse/internal/store"
+	"pulse/internal/ui"
 )
 
 var (
@@ -27,7 +28,7 @@ var logsCmd = &cobra.Command{
 
 <function> is the function's name from pulse.yaml — the same names that
 ` + "`pulse list`" + `, the start banner, and Tab completion show.`,
-	Args: oneFunctionArg("logs"),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runLogs,
 }
 
@@ -36,8 +37,11 @@ func init() {
 	logsCmd.Flags().IntVarP(&flagLogsLimit, "limit", "n", 50, "how many recent lines to show")
 }
 
-func runLogs(_ *cobra.Command, args []string) error {
-	function := args[0]
+func runLogs(cmd *cobra.Command, args []string) error {
+	function, err := resolveFunctionArg(cmd, args, "logs", "which function's logs?")
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadProject()
 	if err != nil {
@@ -71,14 +75,14 @@ func runLogs(_ *cobra.Command, args []string) error {
 
 	if !flagFollow {
 		if len(recent) == 0 {
-			fmt.Printf("no logs for %s yet — invoke it and check back\n", function)
+			fmt.Println(ui.Hint(fmt.Sprintf("no logs for %s yet — `pulse invoke %s` and check back", function, function)))
 		}
 		return nil
 	}
 	if !running {
 		return fmt.Errorf("--follow needs a running engine — start one with `pulse start`")
 	}
-	fmt.Printf("── following %s (Ctrl+C to stop) ──\n", function)
+	fmt.Printf("%s %s %s\n", ui.Dim("── following"), ui.Fn(function), ui.Dim("(Ctrl+C to stop) ──"))
 	return followLogs(info, function)
 }
 
@@ -115,6 +119,6 @@ func followLogs(info *engine.RunInfo, function string) error {
 			printLogLine(l)
 		}
 	}
-	fmt.Println("── engine closed the stream ──")
+	fmt.Println(ui.Dim("── engine closed the stream ──"))
 	return nil
 }

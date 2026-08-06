@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -17,6 +18,9 @@ func init() {
 	invokeCmd.ValidArgsFunction = completeFunctionArg
 	logsCmd.ValidArgsFunction = completeFunctionArg
 	sendCmd.ValidArgsFunction = completeQueueArg
+	eventsReplayCmd.ValidArgsFunction = completeEventArg
+	_ = eventsCmd.RegisterFlagCompletionFunc("function", completeFunctionFlag)
+	_ = eventsListCmd.RegisterFlagCompletionFunc("function", completeFunctionFlag)
 
 	_ = addRouteCmd.RegisterFlagCompletionFunc("function", completeFunctionFlag)
 	_ = addQueueCmd.RegisterFlagCompletionFunc("worker", completeFunctionFlag)
@@ -54,6 +58,26 @@ func completeFunctionArg(_ *cobra.Command, args []string, _ string) ([]string, c
 
 func completeFunctionFlag(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return projectFunctions(), cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeEventArg offers recent event ids with a what/when description.
+func completeEventArg(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	cfg, err := loadProject()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	rows, err := recentEvents(cfg, "", 15)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, ev := range rows {
+		out = append(out, fmt.Sprintf("%s\t%s → %s · %s", shortEventID(ev.ID), ev.Type, ev.Function, ev.Status))
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
 func completeQueueArg(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {

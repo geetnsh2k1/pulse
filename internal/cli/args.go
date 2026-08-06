@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,23 +13,25 @@ import (
 // These Args validators answer the question in the error itself, with the
 // caller's own names from pulse.yaml.
 
-// oneFunctionArg requires exactly one function name and, when it's missing,
-// lists the project's functions instead of cobra's bare arity error.
-func oneFunctionArg(verb string) cobra.PositionalArgs {
-	return func(_ *cobra.Command, args []string) error {
-		if len(args) == 1 {
-			return nil
-		}
-		names := "run `pulse list` to see them"
-		if cfg, err := loadProject(); err == nil && len(cfg.Functions) > 0 {
-			names = strings.Join(functionNames(cfg), ", ")
-		}
-		if len(args) == 0 {
-			return fmt.Errorf("which function? this project has: %s", names)
-		}
-		return fmt.Errorf("%s takes one function name, got %d (%s) — this project has: %s",
-			verb, len(args), strings.Join(args, " "), names)
+// resolveFunctionArg turns an optional positional into a function name: the
+// argument when given, an interactive picker on a terminal, and the
+// teaching error ("this project has: …") everywhere else.
+func resolveFunctionArg(cmd *cobra.Command, args []string, verb, question string) (string, error) {
+	if len(args) == 1 {
+		return args[0], nil
 	}
+	cfg, err := loadProject()
+	if err != nil {
+		return "", err
+	}
+	if stdinIsInteractive() && len(cfg.Functions) > 0 {
+		return pickFunction(bufio.NewReader(cmd.InOrStdin()), cmd.OutOrStdout(), cfg, question)
+	}
+	names := "run `pulse list` to see them"
+	if len(cfg.Functions) > 0 {
+		names = strings.Join(functionNames(cfg), ", ")
+	}
+	return "", fmt.Errorf("which function? %s needs one — this project has: %s", verb, names)
 }
 
 // queueFirstArg requires a queue name (plus optionally more args, checked by

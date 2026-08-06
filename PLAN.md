@@ -321,6 +321,129 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-08-07 — Audit-fix round (everything from the layman report,
+  cleared before P5 resumes).** (1) Banner try-lines now take their bodies
+  from the project's events/*.json (matched by routeKey; json.Compact;
+  quote-safe; generic placeholder fallback) — the audit's 422 trap is
+  closed, pasting the first suggested command returns 201; webhook-relay
+  gained events/webhook.json. (2) `pulse remove` (alias rm) — add's twin:
+  function (drops referencing triggers, keeps code with a hint), route
+  (exact method+path, case-insensitive method), queue (drops sqs trigger,
+  refuses while another queue uses it as dlq), table (cleans env vars
+  pointing at it); bare `pulse remove` wizard mirrors add; yaml helpers
+  RemoveMapEntry/FilterSeq/MapScalar in config/edit.go; 4 new tests.
+  (3) `pulse tables <name> --delete <pk> [--sk <v>]` — one-item delete,
+  AV-typed key from declared schema, engine endpoint
+  POST /api/tables/items/delete + direct path, sk-required/forbidden
+  guards. (4) Wording: doctor single coherent failure outside projects;
+  invoke/send -e missing file in pulse's voice; broken-yaml console line
+  shows relative pulse.yaml; events list hints --function/-n. All
+  live-verified; suite -race green; bin/pulse rebuilt. **Next: P5
+  remainder — log search/--grep + per-request view, invocation history.**
+
+- **2026-08-07 — Layman's E2E audit (35 checkpoints) + `pulse ui` →
+  `pulse monitor` (Geetansh's pick; ui/dash stay as aliases).** Report:
+  scratchpad/pulse-layman-audit.md — 33/35 clean. Fixed during audit:
+  rune-unsafe truncation in `pulse tables` (byte-slice mid-UTF-8 → �).
+  Prioritized gaps recorded: banner try-line 422 trap (proposal: derive
+  bodies from templates' events/*.json via routeKey), doctor double-error
+  outside projects, raw Go error on invoke -e missing file, absolute path
+  in broken-yaml console line, events --function undiscoverable. Missing
+  list: pulse remove (top ask), log search/--grep + per-request view,
+  invocation history, tables --delete, Windows.
+
+- **2026-08-07 — Pack A: `pulse ui` live dashboard (P5 centerpiece).**
+  Full-screen bubbletea app (new dep charmbracelet/bubbletea; input
+  explicitly bound to stdin so piped input works — bubbletea otherwise
+  demands /dev/tty): header (⚡ project · ● live · api), functions pane
+  with ✓/✗ invocation counts (from /api/invocations, 200 recent), queues
+  pane with live depths (1s poll, DLQ>0 flagged red !), streaming log
+  pane over SSE /api/logs/stream (per-function colors, ring 500, `/`
+  incremental filter, ↑↓ scroll), events strip (tab focuses, ↑↓ selects,
+  Enter/r POSTs /api/replay → toast with outcome, replays appear typed
+  "replay"), footer keybar. Hand-rolled ANSI-aware layout (visible-width
+  pad/truncate that closes open styles). /api/functions now includes
+  names. Requires a running engine + terminal (teaching errors otherwise).
+  Live-verified end to end with scripted keys: SSE traffic arrived
+  mid-session, tab→Enter replayed the selected event (toast "↻ replayed
+  d22b0072 → success"), clean alt-screen restore. Suite -race green;
+  bin/pulse rebuilt. Interactivity arc B→C→A complete.
+
+- **2026-08-07 — Interactivity packs B+C (Geetansh approved staged B→C→A).**
+  **Pack B, "no flags needed":** generic prompt helpers
+  (internal/cli/prompt.go: askPick/askText/askYesNo/pickFunction, all
+  reader-injected + unit-tested); bare `pulse add` asks what to add and
+  walks each type (route: method picker → path → function picker); bare
+  `pulse events replay` / `pulse logs` / `pulse invoke` / `pulse peek`
+  offer pickers on a TTY (scripts keep the teaching errors — TTY-gated via
+  stdinIsInteractive); bare `pulse` in a folder with no project offers
+  tour/init/help with the wordmark. **Pack C, "see inside":**
+  `pulse doctor` (yaml validity, runtime presence + certified-range warns,
+  deps/venv, port free, store health — ✓/✱/✗ with fix: lines, exit 1 on
+  real problems); `pulse tables [name]` (counts, or the items themselves —
+  new GET /api/tables/items + direct-store path, AV wire format decoded
+  for humans: done=false · text="…"); `pulse peek [queue]`
+  (non-consuming message preview — new sqs Service.Peek +
+  GET /api/queues/peek, visible/hidden/retried states). All live-verified;
+  suite -race green; bin/pulse rebuilt. **Pack A (pulse ui live
+  dashboard) is next** — task #61, the P5 centerpiece.
+
+- **2026-08-07 — UX sweep 2 (Geetansh: "these are still boring… end to end
+  perfect, animations/logos").** Every remaining screen styled: `pulse
+  list` fully redesigned (⚡ header with ●/○ engine status, amber section
+  headings, per-function colors, dim metadata, manual padding because
+  tabwriter breaks on ANSI, DLQ depths shout "← needs attention" in red),
+  `init --list` (learning-path order, ★ recommended, footer hint),
+  send/stop/validate/logs headers/start shutdown/init notes all through
+  ui. **Wordmark**: amber heartbeat wave (─╮ ╭─╮ ╭──) on `pulse version`
+  and the tour welcome. **Animation**: braille spinner with live elapsed
+  seconds for init dependency installs (amber frames, ✓ — done (6.6s)
+  resolution; static two-piece print off-TTY). Verified: PTY captures of
+  version/list/init --list/spinner; 0 escapes piped and under NO_COLOR;
+  suite -race green; bin/pulse rebuilt.
+
+- **2026-08-07 — CLI experience round (Geetansh: "still feels boring and
+  hard"; he chose amber accent + everything incl. tour).** (1) internal/ui:
+  zero-dep ANSI styling — amber brand accent (256-color 214, yellow
+  fallback), semantic helpers (OK/Err/Warn/Cyan/Bold/Dim), Hint/Commands
+  highlight `backticked commands`, stable per-function colors
+  (docker-compose style), Status colors by HTTP class; disabled under
+  NO_COLOR/TERM=dumb/non-TTY/--no-color root flag; PULSE_FORCE_COLOR=1 for
+  tour children. (2) Restyled: start banner (⚡ pulse wordmark, dim labels,
+  bold URLs, amber try-lines), live stream (per-function colored prefixes,
+  red !, glyph coloring by type, access-line status colors), init/add
+  outputs (green ✓, bold names, amber next-commands, dim hints), wizard,
+  invoke/replay results, events list, main error printer (red ✗ +
+  highlighted fix commands). (3) Styled --help via cobra template funcs
+  (amber headings, bold command names — degrades to plain). (4) **pulse
+  tour**: hands-on 7-step walkthrough driving the real CLI as subprocesses
+  in ./pulse-tour (init hello → start → HTTP call → add queue+worker →
+  send job incl. 🎉 → events + replay latest → stop); Enter advances, q
+  quits, TTY-gated, offline-safe (hello template, --no-install); root help
+  + guide §1 + cheat sheet point to it. Verified: full tour E2E scripted;
+  0 escape codes piped and under NO_COLOR; PTY capture confirms every
+  style; suite -race green; bin/pulse rebuilt.
+
+- **2026-08-07 — P5 begins: event replay shipped.** The acceptance script's
+  last unimplemented line (`pulse events list && pulse events replay <id>`)
+  now runs. Store: EventRow + RecentEvents (LEFT JOIN invocations for
+  outcome/duration, payloads omitted in lists) + EventByPrefix (git-style
+  short ids; ambiguous/missing prefixes teach). Engine: GET /api/events,
+  POST /api/replay (re-invokes with the stored payload, source "replay";
+  replays are themselves recorded so history stays truthful). CLI:
+  `pulse events [list]` (engine-or-store split like logs) and
+  `pulse events replay <id>` (engine or ephemeral — works with everything
+  stopped; exit code follows the outcome). Replay = direct invocation with
+  the stored event (Lambda-console "test" semantics), no re-queue. Tab
+  completion offers recent event ids with what/when. Live-verified the
+  full story on the webhook project: two-day-old failed delivery replayed
+  ephemeral → crashed identically; handler fixed → same event replayed via
+  engine → success; list shows the replays typed `replay`. Guide gains
+  §3.13 "Event history & replay — time travel" (later sections renumbered),
+  cheat sheet row. Suite -race green; bin/pulse rebuilt. Remaining P5: log
+  search/per-request view, invocation history UX, pulse doctor, dashboard
+  decision.
+
 - **2026-08-05 — DX Round B: real-example templates + placeholder-teaching
   args.** Two new templates, both `--lang node|python`: **todo-api** (4
   single-purpose fns — create/list/complete/delete on one table;

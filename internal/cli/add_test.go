@@ -165,3 +165,91 @@ func TestEnvVarForTable(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveFunctionDropsTriggers(t *testing.T) {
+	dir := scaffoldAddProject(t)
+	// Wire a route + queue trigger at createOrder, then remove the function.
+	flagAddFn = "createOrder"
+	if err := runAddRoute(addRouteCmd, []string{"POST", "/orders"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemoveFunction(removeFunctionCmd, []string{"createOrder"}); err != nil {
+		t.Fatalf("remove function: %v", err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, config.FileName))
+	if err != nil {
+		t.Fatalf("result invalid: %v", err)
+	}
+	if _, ok := cfg.Functions["createOrder"]; ok {
+		t.Error("function still present")
+	}
+	for _, tr := range cfg.Triggers {
+		if tr.Function == "createOrder" {
+			t.Error("dangling trigger survived")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "services", "create-order", "handler.py")); err != nil {
+		t.Error("code must be kept")
+	}
+}
+
+func TestRemoveRouteExactMatch(t *testing.T) {
+	dir := scaffoldAddProject(t)
+	flagAddFn = "createOrder"
+	if err := runAddRoute(addRouteCmd, []string{"POST", "/orders"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemoveRoute(removeRouteCmd, []string{"post", "/orders"}); err != nil {
+		t.Fatalf("remove route (case-insensitive method): %v", err)
+	}
+	if err := runRemoveRoute(removeRouteCmd, []string{"POST", "/orders"}); err == nil {
+		t.Fatal("second removal should error with route list")
+	}
+	cfg, _ := config.Load(filepath.Join(dir, config.FileName))
+	if len(cfg.Triggers) != 0 {
+		t.Errorf("triggers left: %d", len(cfg.Triggers))
+	}
+}
+
+func TestRemoveTableCleansEnv(t *testing.T) {
+	dir := scaffoldAddProject(t)
+	flagAddPK = "email"
+	addTableCmd.Flags().Set("pk", "email")
+	flagAddTableFns = []string{"createOrder"}
+	if err := runAddTable(addTableCmd, []string{"customers"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemoveTable(removeTableCmd, []string{"customers"}); err != nil {
+		t.Fatalf("remove table: %v", err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, config.FileName))
+	if err != nil {
+		t.Fatalf("result invalid: %v", err)
+	}
+	if _, ok := cfg.Resources.Tables["customers"]; ok {
+		t.Error("table still declared")
+	}
+	if v, ok := cfg.Functions["createOrder"].Env["CUSTOMERS_TABLE"]; ok {
+		t.Errorf("env wiring survived: %v", v)
+	}
+	// getOrders' fixture env pointed at customers too — must be cleaned.
+	if v, ok := cfg.Functions["getOrders"].Env["CUSTOMERS_TABLE"]; ok {
+		t.Errorf("fixture env wiring survived: %v", v)
+	}
+}
+
+func TestRemoveQueueRefusesWhenUsedAsDLQ(t *testing.T) {
+	scaffoldAddProject(t)
+	flagAddWorker, flagAddDLQ = "createOrder", true
+	if err := runAddQueue(addQueueCmd, []string{"jobs"}); err != nil {
+		t.Fatal(err)
+	}
+	flagAddWorker, flagAddDLQ = "", false
+	err := runRemoveQueue(removeQueueCmd, []string{"jobs-dlq"})
+	if err == nil || !strings.Contains(err.Error(), "dead-letter queue of") {
+		t.Fatalf("want dlq-in-use refusal, got: %v", err)
+	}
+	if err := runRemoveQueue(removeQueueCmd, []string{"jobs"}); err != nil {
+		t.Fatalf("removing the main queue: %v", err)
+	}
+}

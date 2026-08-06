@@ -20,6 +20,7 @@ import (
 	dynamodb "pulse/internal/services/dynamodb"
 	sqs "pulse/internal/services/sqs"
 	"pulse/internal/store"
+	"pulse/internal/ui"
 	"pulse/internal/workers"
 )
 
@@ -38,7 +39,7 @@ var invokeCmd = &cobra.Command{
 
 Uses the running engine when there is one; otherwise boots an ephemeral
 worker just for this invocation — handy for scripts and CI.`,
-	Args: oneFunctionArg("invoke"),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runInvoke,
 }
 
@@ -47,8 +48,11 @@ func init() {
 	invokeCmd.Flags().StringVarP(&flagData, "data", "d", "", "inline JSON event")
 }
 
-func runInvoke(_ *cobra.Command, args []string) error {
-	function := args[0]
+func runInvoke(cmd *cobra.Command, args []string) error {
+	function, err := resolveFunctionArg(cmd, args, "invoke", "which function should I invoke?")
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadProject()
 	if err != nil {
@@ -68,7 +72,7 @@ func runInvoke(_ *cobra.Command, args []string) error {
 	if info, ok := engine.Current(cfg.Root); ok {
 		res, err = invokeViaEngine(info, cfg, function, payload)
 	} else {
-		res, err = invokeEphemeral(cfg, function, payload)
+		res, err = invokeEphemeral(cfg, function, "manual", payload)
 	}
 	if err != nil {
 		return err
@@ -94,8 +98,11 @@ func resolvePayload() ([]byte, error) {
 		payload = b
 	case flagEvent != "":
 		b, err := os.ReadFile(flagEvent)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("event file %s doesn't exist", flagEvent)
+		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading event file %s: %v", flagEvent, err)
 		}
 		payload = b
 	default:
@@ -138,7 +145,7 @@ func invokeViaEngine(info *engine.RunInfo, cfg *config.Config, function string, 
 // calls work identically) in-process — no engine, no runfile — runs the
 // single invocation, and tears everything down. Messages the function
 // enqueues stay in the store; a later `pulse start` delivers them.
-func invokeEphemeral(cfg *config.Config, function string, payload []byte) (engine.InvokeResult, error) {
+func invokeEphemeral(cfg *config.Config, function, source string, payload []byte) (engine.InvokeResult, error) {
 	var out engine.InvokeResult
 
 	st, err := store.Open(cfg.Root)
@@ -174,7 +181,7 @@ func invokeEphemeral(cfg *config.Config, function string, payload []byte) (engin
 		fmt.Fprintf(os.Stderr, "note: %s\n", warning)
 	}
 
-	res, err := mgr.Invoke(context.Background(), function, "manual", payload)
+	res, err := mgr.Invoke(context.Background(), function, source, payload)
 	if err != nil {
 		return out, err
 	}
@@ -194,15 +201,16 @@ func invokeEphemeral(cfg *config.Config, function string, payload []byte) (engin
 }
 
 func printInvokeResult(function string, res engine.InvokeResult) {
-	glyph := "✓"
+	glyph, status := ui.OK("✓"), ui.OK(res.Status)
 	if res.Status != "success" {
-		glyph = "✗"
+		glyph, status = ui.Err("✗"), ui.Err(res.Status)
 	}
 	shortID := res.RequestID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
-	fmt.Printf("%s %s · %s · %dms · request %s\n", glyph, function, res.Status, res.DurationMs, shortID)
+	fmt.Printf("%s %s · %s %s\n", glyph, ui.Fn(function), status,
+		ui.Dim(fmt.Sprintf("· %dms · request %s", res.DurationMs, shortID)))
 
 	if len(res.Logs) > 0 {
 		fmt.Println()
@@ -223,7 +231,7 @@ func printInvokeResult(function string, res engine.InvokeResult) {
 		StackTrace   []string `json:"stackTrace"`
 	}
 	if json.Unmarshal(res.Error, &doc) == nil && doc.ErrorMessage != "" {
-		fmt.Printf("%s: %s\n", orDefault(doc.ErrorType, "Error"), doc.ErrorMessage)
+		fmt.Printf("%s %s\n", ui.Err(orDefault(doc.ErrorType, "Error")+":"), doc.ErrorMessage)
 		for i, frame := range doc.StackTrace {
 			if i >= 15 {
 				fmt.Printf("  … %d more frames\n", len(doc.StackTrace)-i)
@@ -240,7 +248,11 @@ func printInvokeResult(function string, res engine.InvokeResult) {
 
 func printLogLine(l logs.Line) {
 	ts := time.UnixMilli(l.TS).Format("15:04:05.000")
-	fmt.Printf("  %s  %-6s  %s\n", ts, l.Stream, l.Text)
+	stream := ui.Dim(fmt.Sprintf("%-6s", l.Stream))
+	if l.Stream == "stderr" {
+		stream = ui.Err(fmt.Sprintf("%-6s", l.Stream))
+	}
+	fmt.Printf("  %s  %s  %s\n", ui.Dim(ts), stream, l.Text)
 }
 
 func prettyJSON(raw []byte) string {

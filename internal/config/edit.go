@@ -127,3 +127,43 @@ func appendMapEntry(m *yaml.Node, key string, val *yaml.Node) {
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		val)
 }
+
+// RemoveMapEntry deletes key (and its value) from a mapping node.
+// Returns false when the key wasn't present.
+func RemoveMapEntry(m *yaml.Node, key string) bool {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// FilterSeq keeps only the elements keep() approves and returns how many
+// were removed.
+func FilterSeq(seq *yaml.Node, keep func(*yaml.Node) bool) int {
+	kept := seq.Content[:0]
+	removed := 0
+	for _, n := range seq.Content {
+		if keep(n) {
+			kept = append(kept, n)
+		} else {
+			removed++
+		}
+	}
+	seq.Content = kept
+	return removed
+}
+
+// MapScalar reads a mapping node's scalar field ("" when absent) — for
+// inspecting trigger entries during removals.
+func MapScalar(m *yaml.Node, key string) string {
+	if m.Kind != yaml.MappingNode {
+		return ""
+	}
+	if v := mapValue(m, key); v != nil && v.Kind == yaml.ScalarNode {
+		return v.Value
+	}
+	return ""
+}

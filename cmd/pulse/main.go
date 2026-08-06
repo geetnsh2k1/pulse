@@ -6,11 +6,12 @@ import (
 	"os"
 
 	"pulse/internal/cli"
+	"pulse/internal/ui"
 )
 
 func main() {
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "pulse: %v\n", err)
+		fmt.Fprintln(os.Stderr, ui.Errorf(err))
 		os.Exit(1)
 	}
 }

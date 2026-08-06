@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /webhooks",
+  "rawPath": "/webhooks",
+  "requestContext": { "http": { "method": "POST", "path": "/webhooks" } },
+  "body": "{\"type\":\"invoice.paid\",\"amount\":42}",
+  "isBase64Encoded": false
+}

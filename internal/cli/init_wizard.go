@@ -14,6 +14,7 @@ import (
 
 	"pulse/internal/config"
 	"pulse/internal/templates"
+	"pulse/internal/ui"
 )
 
 // Bare `pulse init` on a terminal runs a three-question wizard instead of
@@ -39,7 +40,7 @@ func initWizard(cmd *cobra.Command) (string, error) {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
 
-	fmt.Fprintln(out, "let's create a project — three quick questions, Enter picks the default")
+	fmt.Fprintf(out, "%s %s\n", ui.AccentBold("⚡ pulse"), ui.Dim("— three quick questions, Enter picks the default"))
 
 	name, err := askProjectName(in, out)
 	if err != nil {
@@ -66,7 +67,7 @@ func initWizard(cmd *cobra.Command) (string, error) {
 
 func askProjectName(in *bufio.Reader, out io.Writer) (string, error) {
 	for {
-		fmt.Fprint(out, "\n? project name (my-app) › ")
+		fmt.Fprintf(out, "\n%s project name %s › ", ui.Accent("?"), ui.Dim("(my-app)"))
 		line, err := readAnswer(in)
 		if err != nil {
 			return "", err
@@ -75,7 +76,7 @@ func askProjectName(in *bufio.Reader, out io.Writer) (string, error) {
 			line = "my-app"
 		}
 		if line != "." && !config.ValidProjectName(line) {
-			fmt.Fprintln(out, "  ✗ lowercase letters, digits, and hyphens only")
+			fmt.Fprintf(out, "  %s lowercase letters, digits, and hyphens only\n", ui.Err("✗"))
 			continue
 		}
 		dst := line
@@ -83,7 +84,7 @@ func askProjectName(in *bufio.Reader, out io.Writer) (string, error) {
 			dst = filepath.Join(flagChdir, dst)
 		}
 		if _, err := os.Stat(filepath.Join(dst, config.FileName)); err == nil {
-			fmt.Fprintf(out, "  ✗ %s already has a pulse.yaml — pick another name\n", line)
+			fmt.Fprintf(out, "  %s %s already has a pulse.yaml — pick another name\n", ui.Err("✗"), line)
 			continue
 		}
 		return line, nil
@@ -104,16 +105,16 @@ func askTemplate(in *bufio.Reader, out io.Writer, cmd *cobra.Command) (templates
 		return templates.Info{}, fmt.Errorf("unknown template %q — run `pulse init --list` to see what's available", flagTemplate)
 	}
 
-	fmt.Fprintln(out, "\n? template — what should it start with?")
+	fmt.Fprintf(out, "\n%s template — what should it start with?\n", ui.Accent("?"))
 	for i, t := range all {
 		marker := " "
 		if i == 0 {
-			marker = "★" // the recommended full demo
+			marker = ui.Accent("★") // the recommended full demo
 		}
-		fmt.Fprintf(out, "    %d. %-16s %s %s\n", i+1, t.Name, marker, t.Description)
+		fmt.Fprintf(out, "    %s %s %s %s\n", ui.Dim(fmt.Sprintf("%d.", i+1)), ui.Bold(fmt.Sprintf("%-16s", t.Name)), marker, ui.Dim(t.Description))
 	}
 	for {
-		fmt.Fprintf(out, "  pick 1-%d (1) › ", len(all))
+		fmt.Fprintf(out, "  pick 1-%d %s › ", len(all), ui.Dim("(1)"))
 		line, err := readAnswer(in)
 		if err != nil {
 			return templates.Info{}, err
@@ -129,12 +130,12 @@ func askTemplate(in *bufio.Reader, out io.Writer, cmd *cobra.Command) (templates
 				return t, nil
 			}
 		}
-		fmt.Fprintf(out, "  ✗ answer with a number 1-%d or a template name\n", len(all))
+		fmt.Fprintf(out, "  %s answer with a number 1-%d or a template name\n", ui.Err("✗"), len(all))
 	}
 }
 
 func askLanguage(in *bufio.Reader, out io.Writer, variants []string) (string, error) {
-	fmt.Fprint(out, "\n? language  ")
+	fmt.Fprintf(out, "\n%s language  ", ui.Accent("?"))
 	def := 1
 	for i, v := range variants {
 		fmt.Fprintf(out, "%d. %s  ", i+1, v)
@@ -143,7 +144,7 @@ func askLanguage(in *bufio.Reader, out io.Writer, variants []string) (string, er
 		}
 	}
 	for {
-		fmt.Fprintf(out, "(%d) › ", def)
+		fmt.Fprintf(out, "%s › ", ui.Dim(fmt.Sprintf("(%d)", def)))
 		line, err := readAnswer(in)
 		if err != nil {
 			return "", err
@@ -159,7 +160,7 @@ func askLanguage(in *bufio.Reader, out io.Writer, variants []string) (string, er
 				return v, nil
 			}
 		}
-		fmt.Fprintf(out, "  ✗ answer with a number 1-%d or a language name\n  ", len(variants))
+		fmt.Fprintf(out, "  %s answer with a number 1-%d or a language name\n  ", ui.Err("✗"), len(variants))
 	}
 }
 

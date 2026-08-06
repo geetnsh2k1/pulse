@@ -19,6 +19,9 @@ real AWS later.
 
 ## 1. Get started in 2 minutes
 
+Never used pulse? `pulse tour` walks you through the whole loop hands-on,
+one Enter press per step, in five minutes. Or go manual:
+
 ```bash
 pulse init shop --template api-and-worker --lang python
 cd shop
@@ -520,7 +523,42 @@ pulse logs worker -n 50        # recent lines (works with engine stopped)
 pulse logs worker --follow     # live stream
 ```
 
-### 3.13 Seeing what exists — `pulse list` / `pulse validate`
+### 3.13 Event history & replay — time travel for debugging
+
+Every trigger that ever hit a function — HTTP request, queue delivery,
+invoke — is recorded with its **exact event payload** and outcome:
+
+```bash
+pulse events
+```
+
+```
+  8931cf5b  Aug  5 01:01   sqs    → processWebhook · error · 1ms
+  7275f6ee  Aug  5 01:01   http   → receiveWebhook · success · 1ms
+```
+
+**Replay** fires a recorded event again, byte for byte, through the code
+you have **now**. That's the debugging loop: a weird payload crashed a
+worker yesterday → fix the handler → replay the *actual* event → watch it
+pass. No reconstructing inputs from log fragments.
+
+```bash
+pulse events replay 8931cf5b     # a unique id prefix is enough
+```
+
+```
+↻ replaying 8931cf5b — sqs → processWebhook, originally Aug  5 01:01
+
+✓ processWebhook · success · 0ms · request 94aacd31
+```
+
+- Replay invokes the function **directly** with the stored event (like the
+  Lambda console's "test" button) — it doesn't re-queue or re-send anything.
+- Replays are recorded too (type `replay`), so history stays truthful.
+- `--function worker -n 50` filters the list; exit code follows the outcome
+  (CI-friendly); works with the engine stopped.
+
+### 3.14 Seeing what exists — `pulse list` / `pulse validate`
 
 ```bash
 pulse list
@@ -531,7 +569,7 @@ counts), plus whether the engine is running. `pulse validate` checks
 `pulse.yaml` and reports **all** problems at once, with "did you mean…?"
 suggestions.
 
-### 3.14 Stopping, restarting, persistence
+### 3.15 Stopping, restarting, persistence
 
 ```bash
 pulse stop      # or Ctrl+C in the start terminal
@@ -541,7 +579,7 @@ Everything survives a restart: table data, queued jobs (delivered on next
 start), logs, history — it all lives in the project's `.pulse/` folder.
 Delete `.pulse/` for a clean slate.
 
-### 3.15 Environment variables — none required
+### 3.16 Environment variables — none required
 
 No AWS credentials, no `.env`. pulse injects everything AWS needs
 (`AWS_ENDPOINT_URL` pointing at the local mocks, dummy keys, region). Your
@@ -615,14 +653,20 @@ An app with no queues or tables simply omits `resources` entirely.
 
 | Command | Does |
 |---|---|
+| `pulse tour` | Hands-on 5-minute walkthrough of the whole loop |
 | `pulse init` | New project — no arguments asks three quick questions |
 | `pulse init <name> [-t tpl] [--lang node\|python]` | Same, fully scripted (CI-safe) |
 | `pulse start [--port N]` / `pulse stop` | Local cloud on / off |
 | `pulse add function\|route\|queue\|table …` | Scaffold pieces, applied live |
+| `pulse remove …` | The inverse — unwire pieces; code and data stay |
 | `pulse add table <name> --function <fn>` | Declare table + wire its name into a function's env |
 | `pulse invoke <fn> [-d json \| -e file]` | Run a function synchronously |
 | `pulse send <queue> <body> [--delay N]` | Queue a job |
 | `pulse logs <fn> [-n N] [-f]` | History / live logs |
+| `pulse events` / `pulse events replay <id>` | Trigger history / re-run a recorded event |
+| `pulse monitor` | Live dashboard: logs, queues, Enter-to-replay |
+| `pulse tables [name]` / `pulse peek [queue]` | Look inside your data / waiting messages |
+| `pulse doctor` | Check your setup, with fixes |
 | `pulse list` / `pulse validate` | See everything / check config |
 | `-C <dir>` on any command | Act on a project from anywhere |
 

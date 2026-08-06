@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pulse/internal/config"
+	"pulse/internal/ui"
 )
 
 var validateCmd = &cobra.Command{
@@ -22,7 +23,7 @@ func runValidate(_ *cobra.Command, _ []string) error {
 	}
 	resources := len(cfg.Resources.Tables) + len(cfg.Resources.Buckets) +
 		len(cfg.Resources.Queues) + len(cfg.Resources.Topics)
-	fmt.Printf("✓ %s valid — %d function(s), %d trigger(s), %d resource(s)\n",
-		config.FileName, len(cfg.Functions), len(cfg.Triggers), resources)
+	fmt.Printf("%s %s valid %s\n", ui.OK("✓"), ui.Bold(config.FileName),
+		ui.Dim(fmt.Sprintf("— %d function(s), %d trigger(s), %d resource(s)", len(cfg.Functions), len(cfg.Triggers), resources)))
 	return nil
 }

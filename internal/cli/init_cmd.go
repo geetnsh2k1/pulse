@@ -12,6 +12,7 @@ import (
 
 	"pulse/internal/config"
 	"pulse/internal/templates"
+	"pulse/internal/ui"
 )
 
 var (
@@ -59,14 +60,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--lang needs a language, node or python (you passed %q)", flagLang)
 	}
 	if flagListTemplate {
-		fmt.Println("available templates:")
-		for _, t := range templates.List() {
-			name := t.Name
-			if len(t.Variants) > 0 {
-				name += " (--lang " + strings.Join(t.Variants, "|") + ")"
+		fmt.Println(ui.AccentBold("templates"))
+		for i, t := range wizardTemplateOrder(templates.List()) {
+			marker := " "
+			if i == 0 {
+				marker = ui.Accent("★")
 			}
-			fmt.Printf("  %-36s %s\n", name, t.Description)
+			fmt.Printf("  %s %s %s\n", ui.Bold(fmt.Sprintf("%-15s", t.Name)), marker, ui.Dim(t.Description))
 		}
+		fmt.Println(ui.Hint("\nall take `--lang node|python` · bare `pulse init` picks interactively · ★ recommended"))
 		return nil
 	}
 
@@ -128,24 +130,24 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if len(templates.Variants(flagTemplate)) > 0 {
 		label += " (" + flagLang + ")"
 	}
-	fmt.Printf("✓ created project %s from template %s (%d files)\n", project, label, len(written))
+	fmt.Printf("%s created project %s %s\n", ui.OK("✓"), ui.Bold(project), ui.Dim(fmt.Sprintf("from template %s (%d files)", label, len(written))))
 
 	if !flagNoInstall {
 		installDeps(dst)
 	}
 
-	fmt.Println("\nnext steps:")
+	fmt.Println("\n" + ui.AccentBold("next steps"))
 	if name != "." {
-		fmt.Printf("  cd %s\n", name)
+		fmt.Printf("  %s\n", ui.Accent("cd "+name))
 	}
-	fmt.Println("  pulse start")
+	fmt.Println("  " + ui.Accent("pulse start"))
 	if flagTemplate == "api-and-worker" {
-		fmt.Println(`  curl -X POST localhost:3000/orders -H 'content-type: application/json' -d '{"sku":"A1","qty":2}'`)
-		fmt.Println(`  curl localhost:3000/orders/<id-from-above>    # → status "processed", via queue + worker + table`)
+		fmt.Println("  " + ui.Accent(`curl -X POST localhost:3000/orders -H 'content-type: application/json' -d '{"sku":"A1","qty":2}'`))
+		fmt.Println("  " + ui.Accent("curl localhost:3000/orders/<id-from-above>") + ui.Dim(`    # → status "processed", via queue + worker + table`))
 	} else {
-		fmt.Println(`  curl "localhost:3000/hello?name=you"`)
+		fmt.Println("  " + ui.Accent(`curl "localhost:3000/hello?name=you"`))
 	}
-	fmt.Println("\nedit code or pulse.yaml while it runs — changes apply live. `pulse add --help` scaffolds more.")
+	fmt.Println("\n" + ui.Hint("edit code or pulse.yaml while it runs — changes apply live. `pulse add --help` scaffolds more."))
 	return nil
 }
 
@@ -161,16 +163,16 @@ func installDeps(dst string) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "package.json")); err == nil {
 		if _, lookErr := exec.LookPath("npm"); lookErr != nil {
-			fmt.Println("note: npm not found — run `npm install` inside the project to enable the AWS SDK")
+			fmt.Println(ui.Warn("✱ ") + ui.Hint("npm not found — run `npm install` inside the project to enable the AWS SDK"))
 		} else {
-			fmt.Print("  installing npm dependencies… ")
+			sp := ui.StartSpinner("installing npm dependencies")
 			cmd := exec.Command("npm", "install", "--no-fund", "--no-audit")
 			cmd.Dir = dst
 			if out, err := cmd.CombinedOutput(); err != nil {
-				fmt.Println("didn't finish")
-				fmt.Printf("note: run `npm install` inside the project later (offline?): %s\n", lastLine(out))
+				sp.Fail("didn't finish")
+				fmt.Println(ui.Warn("✱ ") + ui.Hint(fmt.Sprintf("run `npm install` inside the project later (offline?): %s", lastLine(out))))
 			} else {
-				fmt.Println("done")
+				sp.Success()
 			}
 		}
 	}
@@ -184,25 +186,25 @@ func installDeps(dst string) {
 			}
 		}
 		if py == "" {
-			fmt.Println("note: no python found — install Python, then run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt")
+			fmt.Println(ui.Warn("✱ ") + ui.Hint("no python found — install Python, then run `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`"))
 			return
 		}
-		fmt.Print("  creating .venv and installing python dependencies… ")
+		sp := ui.StartSpinner("creating .venv and installing python dependencies")
 		venv := exec.Command(py, "-m", "venv", ".venv")
 		venv.Dir = dst
 		if out, err := venv.CombinedOutput(); err != nil {
-			fmt.Println("didn't finish")
-			fmt.Printf("note: create it manually later: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt (%s)\n", lastLine(out))
+			sp.Fail("didn't finish")
+			fmt.Println(ui.Warn("✱ ") + ui.Hint(fmt.Sprintf("create it manually later: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` (%s)", lastLine(out))))
 			return
 		}
 		pip := exec.Command(filepath.Join(dst, ".venv", "bin", "python"), "-m", "pip", "install", "-q", "-r", "requirements.txt")
 		pip.Dir = dst
 		if out, err := pip.CombinedOutput(); err != nil {
-			fmt.Println("didn't finish")
-			fmt.Printf("note: run `.venv/bin/pip install -r requirements.txt` later (offline?) — %s\n", lastLine(out))
+			sp.Fail("didn't finish")
+			fmt.Println(ui.Warn("✱ ") + ui.Hint(fmt.Sprintf("run `.venv/bin/pip install -r requirements.txt` later (offline?) — %s", lastLine(out))))
 			return
 		}
-		fmt.Println("done")
+		sp.Success()
 	}
 }
 

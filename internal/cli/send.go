@@ -14,6 +14,7 @@ import (
 	"pulse/internal/engine"
 	sqs "pulse/internal/services/sqs"
 	"pulse/internal/store"
+	"pulse/internal/ui"
 )
 
 var (
@@ -51,7 +52,7 @@ func runSend(_ *cobra.Command, args []string) error {
 		return err
 	}
 	if _, ok := cfg.Resources.Queues[queue]; !ok {
-		fmt.Printf("note: %q isn't declared in pulse.yaml — creating it with defaults\n", queue)
+		fmt.Printf("%s %s isn't declared in pulse.yaml — creating it with defaults\n", ui.Warn("✱"), ui.Bold(queue))
 	}
 
 	if info, ok := engine.Current(cfg.Root); ok {
@@ -59,7 +60,7 @@ func runSend(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("✓ queued message %s on %s — the engine will deliver it in a moment\n", shortID(id), queue)
+		fmt.Printf("%s queued message %s on %s %s\n", ui.OK("✓"), ui.Bold(shortID(id)), ui.Fn(queue), ui.Dim("— the engine will deliver it in a moment"))
 		return nil
 	}
 
@@ -74,7 +75,7 @@ func runSend(_ *cobra.Command, args []string) error {
 	if apiErr != nil {
 		return fmt.Errorf("%s", apiErr.Message)
 	}
-	fmt.Printf("✓ queued message %s on %s — engine is stopped, it will be delivered on the next `pulse start`\n", shortID(id), queue)
+	fmt.Printf("%s queued message %s on %s %s\n", ui.OK("✓"), ui.Bold(shortID(id)), ui.Fn(queue), ui.Hint("— engine is stopped, it will be delivered on the next `pulse start`"))
 	return nil
 }
 
@@ -89,6 +90,9 @@ func resolveSendBody(args []string) (string, error) {
 		return string(b), err
 	case flagSendEvent != "":
 		b, err := os.ReadFile(flagSendEvent)
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("body file %s doesn't exist", flagSendEvent)
+		}
 		return string(b), err
 	}
 	return "", fmt.Errorf("no message body — pass it as an argument or via --event file")

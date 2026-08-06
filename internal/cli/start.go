@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"pulse/internal/engine"
 	"pulse/internal/gateway"
 	"pulse/internal/store"
+	"pulse/internal/ui"
 	"pulse/internal/version"
 )
 
@@ -53,33 +58,40 @@ func runStart(_ *cobra.Command, _ []string) error {
 	defer st.Close()
 
 	eng := engine.New(cfg, st)
-	eng.OnEvent = func(msg string) { fmt.Println(msg) }
+	eng.OnEvent = func(msg string) { fmt.Println(styleEventLine(msg)) }
 	if err := eng.Start(t0); err != nil {
 		return err
 	}
 
 	for _, warning := range eng.Warnings() {
-		fmt.Printf("note: %s\n", warning)
+		fmt.Printf("%s %s\n", ui.Warn("✱"), ui.Dim(warning))
 	}
 
-	fmt.Printf("pulse %s — project %s (%s)\n", version.Version, cfg.Project, cfg.Region)
-	fmt.Printf("  functions  %d (%s)\n", len(cfg.Functions), strings.Join(cfg.FunctionNames(), ", "))
+	names := make([]string, 0, len(cfg.Functions))
+	for _, n := range cfg.FunctionNames() {
+		names = append(names, ui.Fn(n))
+	}
+	fmt.Printf("%s %s — %s %s\n", ui.AccentBold("⚡ pulse"), ui.Dim(version.Version),
+		ui.Bold(cfg.Project), ui.Dim("("+cfg.Region+")"))
+	fmt.Printf("  %s  %s\n", ui.Dim("functions"), strings.Join(names, ui.Dim(" · ")))
 	if apiURL := eng.APIURL(); apiURL != "" {
-		fmt.Printf("  api        %s\n", apiURL)
+		fmt.Printf("  %s        %s\n", ui.Dim("api"), ui.Bold(apiURL))
 		label := "routes"
 		for _, rt := range eng.Routes() {
-			fmt.Printf("  %-9s  %s %s → %s\n", label, rt.Method, rt.Path, rt.Function)
+			fmt.Printf("  %s  %s %s %s %s\n", ui.Dim(fmt.Sprintf("%-9s", label)),
+				ui.Bold(rt.Method), rt.Path, ui.Dim("→"), ui.Fn(rt.Function))
 			label = ""
 		}
 		label = "try"
-		for _, tl := range tryLines(eng.Routes(), apiURL) {
-			fmt.Printf("  %-9s  %s\n", label, tl)
+		for _, tl := range tryLines(eng.Routes(), apiURL, sampleBodies(cfg.Root)) {
+			fmt.Printf("  %s  %s\n", ui.Dim(fmt.Sprintf("%-9s", label)), ui.Accent(tl))
 			label = ""
 		}
 	}
-	fmt.Printf("  aws        %s (%s)\n", eng.AWSURL(), strings.Join(eng.AWSServices(), ", "))
-	fmt.Printf("  control    %s\n", eng.ControlAddr())
-	fmt.Printf("engine ready in %s — code & pulse.yaml changes apply live · Ctrl+C to stop\n", eng.ReadyIn().Round(time.Millisecond))
+	fmt.Printf("  %s        %s %s\n", ui.Dim("aws"), eng.AWSURL(), ui.Dim("("+strings.Join(eng.AWSServices(), ", ")+")"))
+	fmt.Printf("  %s    %s\n", ui.Dim("control"), ui.Dim(eng.ControlAddr()))
+	fmt.Printf("%s %s\n", ui.OK("ready in "+eng.ReadyIn().Round(time.Millisecond).String()),
+		ui.Dim("— code & pulse.yaml changes apply live · Ctrl+C to stop"))
 
 	// Stream every function's output into this console: the terminal
 	// running `pulse start` tells the whole story.
@@ -90,11 +102,11 @@ func runStart(_ *cobra.Command, _ []string) error {
 			if line.Stream == "system" {
 				continue // delivery/reload lines already print via OnEvent
 			}
-			marker := "|"
+			marker := ui.Dim("|")
 			if line.Stream == "stderr" {
-				marker = "!"
+				marker = ui.Err("!")
 			}
-			fmt.Printf("  %s %s %s\n", line.Function, marker, line.Text)
+			fmt.Printf("  %s %s %s\n", ui.Fn(line.Function), marker, line.Text)
 		}
 	}()
 
@@ -103,9 +115,9 @@ func runStart(_ *cobra.Command, _ []string) error {
 
 	select {
 	case s := <-sig:
-		fmt.Printf("\nreceived %s, shutting down…\n", s)
+		fmt.Println(ui.Dim(fmt.Sprintf("\nreceived %s, shutting down…", s)))
 	case <-eng.ShutdownRequested():
-		fmt.Println("shutdown requested via API, shutting down…")
+		fmt.Println(ui.Dim("shutdown requested via API, shutting down…"))
 	case err := <-eng.ServeErr():
 		return fmt.Errorf("control API failed: %w", err)
 	}
@@ -115,15 +127,15 @@ func runStart(_ *cobra.Command, _ []string) error {
 	if err := eng.Shutdown(ctx); err != nil {
 		return err
 	}
-	fmt.Println("✓ stopped")
+	fmt.Printf("%s stopped — see you next time\n", ui.OK("✓"))
 	return nil
 }
 
 // tryLines renders up to three copy-paste curl commands for the banner —
-// GET routes first (always safe to paste), then one write route with a
-// placeholder body. Path params get sample values so the line stays
-// runnable.
-func tryLines(routes []gateway.RouteInfo, apiURL string) []string {
+// writes first (they make something happen), with bodies taken from the
+// project's events/*.json samples when one matches the route, so the
+// suggested command actually succeeds. Path params get sample values.
+func tryLines(routes []gateway.RouteInfo, apiURL string, samples map[string]string) []string {
 	host := strings.TrimPrefix(apiURL, "http://")
 	var gets, writes []string
 	for _, rt := range routes {
@@ -132,7 +144,11 @@ func tryLines(routes []gateway.RouteInfo, apiURL string) []string {
 		case "GET", "ANY":
 			gets = append(gets, fmt.Sprintf("curl %s%s", host, path))
 		default:
-			writes = append(writes, fmt.Sprintf("curl -X %s %s%s -d '{\"key\":\"value\"}'", rt.Method, host, path))
+			body := samples[rt.Method+" "+rt.Path]
+			if body == "" {
+				body = `{"key":"value"}`
+			}
+			writes = append(writes, fmt.Sprintf("curl -X %s %s%s -d '%s'", rt.Method, host, path, body))
 		}
 	}
 	out := append(writes, gets...) // a write first: it makes something happen
@@ -141,6 +157,57 @@ func tryLines(routes []gateway.RouteInfo, apiURL string) []string {
 	}
 	return out
 }
+
+// sampleBodies maps "METHOD /path" → request body, read from the project's
+// events/*.json sample files (they carry a routeKey).
+func sampleBodies(root string) map[string]string {
+	out := map[string]string{}
+	files, _ := filepath.Glob(filepath.Join(root, "events", "*.json"))
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var ev struct{ RouteKey, Body string }
+		if json.Unmarshal(raw, &ev) != nil || ev.RouteKey == "" || !json.Valid([]byte(ev.Body)) {
+			continue
+		}
+		var buf bytes.Buffer
+		if json.Compact(&buf, []byte(ev.Body)) == nil && !strings.Contains(buf.String(), "'") {
+			out[ev.RouteKey] = buf.String()
+		}
+	}
+	return out
+}
+
+// styleEventLine colorizes the engine's console lines by their leading
+// glyph; HTTP access lines get their status code colored by class.
+func styleEventLine(msg string) string {
+	if !ui.Enabled() {
+		return msg
+	}
+	for glyph, style := range map[string]func(string) string{
+		"⚙": ui.Cyan, "↻": ui.Warn, "✓": ui.OK, "✱": ui.Warn,
+	} {
+		if strings.HasPrefix(msg, glyph) {
+			return style(glyph) + msg[len(glyph):]
+		}
+	}
+	switch {
+	case strings.HasPrefix(msg, "✗"):
+		return ui.Err("✗") + ui.Commands(msg[len("✗"):])
+	case strings.HasPrefix(msg, "☠"):
+		return ui.Err(msg)
+	case strings.HasPrefix(msg, "🎉"):
+		return ui.AccentBold(msg)
+	}
+	if m := accessStatus.FindStringSubmatchIndex(msg); m != nil {
+		return msg[:m[2]] + ui.Status(msg[m[2]:m[3]]) + msg[m[3]:]
+	}
+	return msg
+}
+
+var accessStatus = regexp.MustCompile(` · (\d{3}) · `)
 
 // samplePath makes a route path pasteable: {id} → 123, {proxy+} → hello.
 func samplePath(path string) string {

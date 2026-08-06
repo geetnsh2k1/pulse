@@ -4,15 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"pulse/internal/config"
 	"pulse/internal/engine"
+	"pulse/internal/ui"
 )
 
 var listCmd = &cobra.Command{
@@ -28,39 +27,66 @@ func runList(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "FUNCTION\tRUNTIME\tHANDLER\tCODE\tTIMEOUT\tMEMORY")
+	info, running := engine.Current(cfg.Root)
+	status := ui.Dim("○ stopped — `pulse start` turns it on")
+	if running {
+		detail := fmt.Sprintf("(pid %d", info.PID)
+		if info.APIAddr != "" {
+			detail += ", api " + info.APIAddr
+		}
+		detail += ")"
+		status = ui.OK("● running ") + ui.Dim(detail)
+	}
+	fmt.Printf("%s %s %s · %s\n", ui.AccentBold("⚡"), ui.Bold(cfg.Project), ui.Dim("("+cfg.Region+")"), status)
+
+	fmt.Println("\n" + ui.AccentBold("functions"))
+	nameW := 0
+	for _, n := range cfg.FunctionNames() {
+		nameW = max(nameW, len(n))
+	}
 	for _, name := range cfg.FunctionNames() {
 		fn := cfg.Functions[name]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%ds\t%dMB\n",
-			name, fn.Runtime, fn.Handler, fn.CodeDir, fn.Timeout, fn.Memory)
+		fmt.Printf("  %s%s  %s\n", ui.Fn(name), pad(name, nameW),
+			ui.Dim(fmt.Sprintf("%s · %s · %ds · %dMB", fn.Runtime, fn.CodeDir, fn.Timeout, fn.Memory)))
 	}
-	w.Flush()
 
 	if len(cfg.Triggers) > 0 {
-		fmt.Println()
-		w = tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "TRIGGER\tDETAILS\tFUNCTION")
+		fmt.Println("\n" + ui.AccentBold("triggers"))
+		detailW := 0
 		for _, t := range cfg.Triggers {
-			fmt.Fprintf(w, "%s\t%s\t→ %s\n", t.Type, triggerDetails(t), t.Function)
+			detailW = max(detailW, len(plainTrigger(t)))
 		}
-		w.Flush()
+		for _, t := range cfg.Triggers {
+			fmt.Printf("  %s%s %s %s\n", styledTrigger(t), pad(plainTrigger(t), detailW),
+				ui.Dim("→"), ui.Fn(t.Function))
+		}
 	}
 
-	info, running := engine.Current(cfg.Root)
 	printResources(cfg, fetchQueueStats(info, running), fetchTableStats(info, running))
-
-	fmt.Println()
-	if info, ok := info, running; ok {
-		if info.APIAddr != "" {
-			fmt.Printf("engine: running (pid %d, api %s, control %s)\n", info.PID, info.APIAddr, info.Addr)
-		} else {
-			fmt.Printf("engine: running (pid %d, control %s)\n", info.PID, info.Addr)
-		}
-	} else {
-		fmt.Println("engine: stopped")
-	}
 	return nil
+}
+
+// plainTrigger and styledTrigger render the same visible text — the plain
+// form measures column width, the styled one prints (ANSI adds no width).
+func plainTrigger(t *config.Trigger) string {
+	if t.Type == "http" {
+		return t.Method + " " + t.Path
+	}
+	return t.Type + " " + triggerDetails(t)
+}
+
+func styledTrigger(t *config.Trigger) string {
+	if t.Type == "http" {
+		return ui.Bold(t.Method) + " " + t.Path
+	}
+	return ui.Cyan(t.Type) + " " + triggerDetails(t)
+}
+
+func pad(s string, w int) string {
+	if len(s) >= w {
+		return ""
+	}
+	return strings.Repeat(" ", w-len(s))
 }
 
 func triggerDetails(t *config.Trigger) string {
@@ -132,10 +158,11 @@ func fetchTableStats(info *engine.RunInfo, running bool) map[string]string {
 
 func printResources(cfg *config.Config, queueStats, tableStats map[string]string) {
 	r := cfg.Resources
-	if len(r.Tables) == 0 && len(r.Buckets) == 0 && len(r.Queues) == 0 && len(r.Topics) == 0 {
+	if len(r.Tables) == 0 && len(r.Buckets) == 0 && len(r.Queues) == 0 &&
+		len(r.Topics) == 0 && len(queueStats) == 0 {
 		return
 	}
-	fmt.Println("\nRESOURCES")
+	fmt.Println("\n" + ui.AccentBold("resources"))
 
 	for _, name := range sortedKeys(r.Tables) {
 		tb := r.Tables[name]
@@ -143,23 +170,23 @@ func printResources(cfg *config.Config, queueStats, tableStats map[string]string
 		if tb.SK != nil {
 			key += fmt.Sprintf(", sk %s %s", tb.SK.Name, tb.SK.Type)
 		}
-		line := fmt.Sprintf("  table   %s (%s)", name, key)
+		line := fmt.Sprintf("  %s   %s %s", ui.Dim("table"), ui.Bold(name), ui.Dim("("+key+")"))
 		if depth, ok := tableStats[name]; ok {
-			line += " · " + depth
+			line += ui.Dim(" · ") + depth
 		}
 		fmt.Println(line)
 	}
 	for _, b := range r.Buckets {
-		fmt.Printf("  bucket  %s\n", b)
+		fmt.Printf("  %s  %s\n", ui.Dim("bucket"), ui.Bold(b))
 	}
 	for _, name := range sortedKeys(r.Queues) {
 		q := r.Queues[name]
-		line := "  queue   " + name
+		line := fmt.Sprintf("  %s   %s", ui.Dim("queue"), ui.Bold(name))
 		if q.DLQ != "" {
-			line += fmt.Sprintf(" (dlq %s after %d receives)", q.DLQ, q.MaxReceiveCount)
+			line += ui.Dim(fmt.Sprintf(" (dlq %s after %d receives)", q.DLQ, q.MaxReceiveCount))
 		}
 		if depth, ok := queueStats[name]; ok {
-			line += " · " + depth
+			line += ui.Dim(" · ") + styleDepth(name, depth)
 		}
 		fmt.Println(line)
 	}
@@ -167,13 +194,26 @@ func printResources(cfg *config.Config, queueStats, tableStats map[string]string
 	// first send) still deserve visibility.
 	for _, name := range sortedKeys(queueStats) {
 		if _, declared := r.Queues[name]; !declared {
-			fmt.Printf("  queue   %s (auto-created) · %s\n", name, queueStats[name])
+			fmt.Printf("  %s   %s %s %s\n", ui.Dim("queue"), ui.Bold(name),
+				ui.Warn("(auto-created)"), ui.Dim("· ")+styleDepth(name, queueStats[name]))
 		}
 	}
 	for _, name := range sortedKeys(r.Topics) {
 		tp := r.Topics[name]
-		fmt.Printf("  topic   %s → %s\n", name, strings.Join(tp.Subscribers, ", "))
+		fmt.Printf("  %s   %s %s %s\n", ui.Dim("topic"), ui.Bold(name), ui.Dim("→"), strings.Join(tp.Subscribers, ", "))
 	}
+}
+
+// styleDepth quietly dims empty queues and shouts about messages stuck in a
+// dead-letter queue.
+func styleDepth(name, depth string) string {
+	if strings.HasSuffix(name, "-dlq") && !strings.HasPrefix(depth, "0 visible") {
+		return ui.Err(depth + " ← needs attention")
+	}
+	if strings.HasPrefix(depth, "0 visible, 0 in flight") {
+		return ui.Dim(depth)
+	}
+	return depth
 }
 
 func sortedKeys[V any](m map[string]V) []string {

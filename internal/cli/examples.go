@@ -27,6 +27,21 @@ func init() {
 	listCmd.Example = `  pulse list`
 	validateCmd.Example = `  pulse validate`
 
+	monitorCmd.Example = `  pulse monitor    # engine must be running — pulse start first`
+
+	doctorCmd.Example = `  pulse doctor`
+	tablesCmd.Example = `  pulse tables               # every table with item counts
+  pulse tables orders -n 50  # look at the items themselves`
+	peekCmd.Example = `  pulse peek                 # pick a queue interactively
+  pulse peek order-events    # waiting messages, nothing consumed`
+
+	eventsCmd.Example = `  pulse events                        # recent history, newest first
+  pulse events --function worker -n 50
+  pulse events replay ab12cd34        # re-run one (id prefix is enough)`
+
+	eventsReplayCmd.Example = `  pulse events replay ab12cd34
+  pulse events replay ab12cd34 && echo fixed   # exit code follows the outcome`
+
 	addFunctionCmd.Example = `  pulse add function notifier
   pulse add function resizer --runtime python --dir services/resizer`
 
@@ -36,6 +51,12 @@ func init() {
 
 	addQueueCmd.Example = `  pulse add queue emails --worker send-email        # queue + worker + wiring, one command
   pulse add queue payments --worker charge --dlq    # + dead-letter queue after 3 failures`
+
+	removeCmd.Example = `  pulse remove                       # asks what to remove
+  pulse remove function notifier     # drops its triggers too; code stays
+  pulse remove route POST /notify
+  pulse remove queue emails
+  pulse remove table customers       # rows stay in .pulse/`
 
 	addTableCmd.Example = `  pulse add table customers --pk email
   pulse add table events --pk userId --sk createdAt:N   # sort key for "rows per user, in order"

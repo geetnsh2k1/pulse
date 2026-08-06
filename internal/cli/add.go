@@ -12,6 +12,7 @@ import (
 
 	"pulse/internal/config"
 	"pulse/internal/engine"
+	"pulse/internal/ui"
 )
 
 // pulse add <thing> — scaffolding that edits pulse.yaml for you (comments
@@ -24,7 +25,11 @@ var addCmd = &cobra.Command{
 	Short: "Add functions, routes, queues, or tables to the project",
 	Long: `Add pieces to pulse.yaml without editing it by hand. The file is edited
 surgically (your comments survive), validated, and — if the engine is
-running — applied live.`,
+running — applied live.
+
+Bare ` + "`pulse add`" + ` on a terminal asks what to add and walks you through it.`,
+	Args: cobra.NoArgs,
+	RunE: runAddWizard,
 }
 
 var (
@@ -172,10 +177,10 @@ func runAddFunction(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("✓ added function %s (%s)\n", name, runtime)
-	fmt.Printf("  code   %s\n", filepath.Join(dir, handlerFile))
-	fmt.Printf("  try    pulse invoke %s -d '{\"hello\":1}'\n", name)
-	fmt.Printf("  wire   pulse add route GET /%s --function %s   ·   pulse add queue %s-jobs --worker %s\n", name, name, name, name)
+	fmt.Printf("%s added function %s %s\n", ui.OK("✓"), ui.Bold(name), ui.Dim("("+runtime+")"))
+	fmt.Printf("  %s   %s\n", ui.Dim("code"), filepath.Join(dir, handlerFile))
+	fmt.Printf("  %s    %s\n", ui.Dim("try"), ui.Accent(fmt.Sprintf("pulse invoke %s -d '{\"hello\":1}'", name)))
+	fmt.Printf("  %s   %s\n", ui.Dim("wire"), ui.Hint(fmt.Sprintf("`pulse add route GET /%s --function %s`   ·   `pulse add queue %s-jobs --worker %s`", name, name, name, name)))
 	printAppliesLive(cfg.Root)
 	return nil
 }
@@ -199,9 +204,9 @@ func runAddRoute(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✓ added route %s %s → %s\n", method, path, flagAddFn)
+	fmt.Printf("%s added route %s %s %s %s\n", ui.OK("✓"), ui.Bold(method), ui.Bold(path), ui.Dim("→"), ui.Fn(flagAddFn))
 	hint := strings.ReplaceAll(strings.ReplaceAll(path, "{", "<"), "}", ">")
-	fmt.Printf("  try    curl -X %s localhost:3000%s\n", method, hint)
+	fmt.Printf("  %s    %s\n", ui.Dim("try"), ui.Accent(fmt.Sprintf("curl -X %s localhost:3000%s", method, hint)))
 	printAppliesLive(cfg.Root)
 	return nil
 }
@@ -268,22 +273,22 @@ func runAddQueue(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("✓ added queue %s", name)
+	fmt.Printf("%s added queue %s", ui.OK("✓"), ui.Bold(name))
 	if flagAddDLQ {
-		fmt.Printf(" (dlq %s-dlq)", name)
+		fmt.Printf(" %s", ui.Dim(fmt.Sprintf("(dlq %s-dlq)", name)))
 	}
 	if flagAddWorker != "" {
-		fmt.Printf(" → %s", flagAddWorker)
+		fmt.Printf(" %s %s", ui.Dim("→"), ui.Fn(flagAddWorker))
 	}
 	fmt.Println()
 	if newWorker != nil {
 		fmt.Printf("  also created function %s — its handler is %s\n",
-			flagAddWorker, filepath.Join(newWorker.dir, newWorker.handlerFile))
+			ui.Fn(flagAddWorker), ui.Bold(filepath.Join(newWorker.dir, newWorker.handlerFile)))
 	} else if workerDir != "" {
-		fmt.Printf("  messages are handled by the existing function %s (%s)\n", flagAddWorker, workerDir)
+		fmt.Printf("  messages are handled by the existing function %s %s\n", ui.Fn(flagAddWorker), ui.Dim("("+workerDir+")"))
 	}
-	fmt.Printf("  try    pulse send %s '{\"hello\":1}'   (needs `pulse start` running to deliver)\n", name)
-	fmt.Printf("  watch  pulse logs %s -f\n", flagAddWorker)
+	fmt.Printf("  %s    %s %s\n", ui.Dim("try"), ui.Accent(fmt.Sprintf("pulse send %s '{\"hello\":1}'", name)), ui.Dim("(needs `pulse start` running to deliver)"))
+	fmt.Printf("  %s  %s\n", ui.Dim("watch"), ui.Accent(fmt.Sprintf("pulse logs %s -f", flagAddWorker)))
 	printAppliesLive(cfg.Root)
 	return nil
 }
@@ -360,19 +365,19 @@ func runAddTable(cmd *cobra.Command, args []string) error {
 	}
 
 	if tableExists {
-		fmt.Printf("✱ table %s already declared — wiring env only\n", name)
+		fmt.Printf("%s table %s already declared — wiring env only\n", ui.Warn("✱"), ui.Bold(name))
 	} else {
-		fmt.Printf("✓ added table %s (pk %s%s)\n", name, flagAddPK, skSuffix())
-		fmt.Println("  your code can use it right away — no schema for the other columns: just write items")
+		fmt.Printf("%s added table %s %s\n", ui.OK("✓"), ui.Bold(name), ui.Dim(fmt.Sprintf("(pk %s%s)", flagAddPK, skSuffix())))
+		fmt.Println(ui.Dim("  your code can use it right away — no schema for the other columns: just write items"))
 	}
 	for _, fn := range wired {
-		fmt.Printf("  wired  %s env %s=%s\n", fn, envName, name)
+		fmt.Printf("  %s  %s env %s\n", ui.Dim("wired"), ui.Fn(fn), ui.Bold(envName+"="+name))
 	}
 	for _, s := range skipped {
-		fmt.Printf("  ✱ %s — skipped\n", s)
+		fmt.Printf("  %s %s\n", ui.Warn("✱"), ui.Dim(s+" — skipped"))
 	}
 	if len(wired) > 0 {
-		fmt.Printf("  code   %s\n", tableCodeHint(cfg, wired[0], envName))
+		fmt.Printf("  %s   %s\n", ui.Dim("code"), ui.Dim(tableCodeHint(cfg, wired[0], envName)))
 	}
 	printAppliesLive(cfg.Root)
 	return nil
@@ -467,8 +472,8 @@ func pickRuntime(cfg *config.Config, flag string) (runtime, family string, err e
 
 func printAppliesLive(root string) {
 	if _, running := engine.Current(root); running {
-		fmt.Println("  the running engine is applying this now")
+		fmt.Println("  " + ui.Hint("→ the running engine is applying this now"))
 	} else {
-		fmt.Println("  applies when you `pulse start`")
+		fmt.Println("  " + ui.Hint("→ applies when you `pulse start`"))
 	}
 }

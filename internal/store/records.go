@@ -1,6 +1,9 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // LogRow is one captured output line from a worker (or the engine itself,
 // stream "system").
@@ -105,6 +108,76 @@ func (s *Store) RecordEvent(id, eventType, source, targetFunction string, payloa
 		`INSERT INTO events (id, type, source, target_function, payload, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`, id, eventType, nullable(source), nullable(targetFunction), payload, createdAt)
 	return err
+}
+
+// EventRow is one recorded trigger event, joined with the outcome of the
+// invocation it caused (events.id == invocations.id, the request id).
+type EventRow struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`   // http | sqs | manual | replay | …
+	Source     string `json:"source"` // free-form origin detail
+	Function   string `json:"function"`
+	Payload    []byte `json:"payload,omitempty"`
+	CreatedAt  int64  `json:"createdAt"`
+	Status     string `json:"status"` // invocation outcome; "" if unknown
+	DurationMs int64  `json:"durationMs"`
+}
+
+// RecentEvents lists recorded events newest-first, with each invocation's
+// outcome. Payloads are omitted (list views don't need the bytes).
+func (s *Store) RecentEvents(function string, limit int) ([]EventRow, error) {
+	rows, err := s.db.Query(
+		`SELECT e.id, e.type, COALESCE(e.source, ''), COALESCE(e.target_function, ''),
+		        e.created_at, COALESCE(i.status, ''), COALESCE(i.duration_ms, 0)
+		 FROM events e LEFT JOIN invocations i ON i.id = e.id
+		 WHERE (? = '' OR e.target_function = ?)
+		 ORDER BY e.created_at DESC LIMIT ?`, function, function, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []EventRow
+	for rows.Next() {
+		var r EventRow
+		if err := rows.Scan(&r.ID, &r.Type, &r.Source, &r.Function, &r.CreatedAt, &r.Status, &r.DurationMs); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EventByPrefix fetches one event (payload included) by full id or unique
+// prefix — the CLI shows 8-char ids, git-style.
+func (s *Store) EventByPrefix(prefix string) (*EventRow, error) {
+	rows, err := s.db.Query(
+		`SELECT e.id, e.type, COALESCE(e.source, ''), COALESCE(e.target_function, ''), e.payload, e.created_at
+		 FROM events e WHERE e.id LIKE ? ORDER BY e.created_at DESC LIMIT 2`, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var found []EventRow
+	for rows.Next() {
+		var r EventRow
+		if err := rows.Scan(&r.ID, &r.Type, &r.Source, &r.Function, &r.Payload, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	switch len(found) {
+	case 0:
+		return nil, fmt.Errorf("no event matches %q — run `pulse events` to see recent ones", prefix)
+	case 1:
+		return &found[0], nil
+	default:
+		return nil, fmt.Errorf("%q matches more than one event — use more characters of the id", prefix)
+	}
 }
 
 func nullable(s string) any {

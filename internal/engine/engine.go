@@ -242,7 +242,8 @@ func (e *Engine) applyConfig() {
 
 	newCfg, err := config.Load(e.path)
 	if err != nil {
-		e.event("✗ pulse.yaml changed but has problems — keeping the current config:\n" + err.Error())
+		e.event("✗ pulse.yaml changed but has problems — keeping the current config:\n" +
+			strings.ReplaceAll(err.Error(), e.path, "pulse.yaml"))
 		e.sink.System("engine", "", "rejected pulse.yaml change: "+err.Error(), time.Now().UnixMilli())
 		return
 	}
@@ -434,7 +435,12 @@ func (e *Engine) routes() http.Handler {
 	mux.HandleFunc("GET /api/queues", e.handleQueues)
 	mux.HandleFunc("POST /api/queues/send", e.handleQueueSend)
 	mux.HandleFunc("GET /api/tables", e.handleTables)
+	mux.HandleFunc("GET /api/tables/items", e.handleTableItems)
+	mux.HandleFunc("POST /api/tables/items/delete", e.handleTableItemDelete)
+	mux.HandleFunc("GET /api/queues/peek", e.handleQueuePeek)
 	mux.HandleFunc("POST /api/invoke", e.handleInvoke)
+	mux.HandleFunc("GET /api/events", e.handleEvents)
+	mux.HandleFunc("POST /api/replay", e.handleReplay)
 	mux.HandleFunc("GET /api/invocations", e.handleInvocations)
 	mux.HandleFunc("GET /api/logs", e.handleLogs)
 	mux.HandleFunc("GET /api/logs/stream", e.handleLogStream)
@@ -475,9 +481,13 @@ func (e *Engine) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (e *Engine) handleFunctions(w http.ResponseWriter, _ *http.Request) {
 	cfg, _, _, _, _ := e.state()
-	out := make([]*config.Function, 0, len(cfg.Functions))
+	type fnOut struct {
+		Name string `json:"name"`
+		*config.Function
+	}
+	out := make([]fnOut, 0, len(cfg.Functions))
 	for _, name := range cfg.FunctionNames() {
-		out = append(out, cfg.Functions[name])
+		out = append(out, fnOut{name, cfg.Functions[name]})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -547,6 +557,13 @@ func (e *Engine) handleQueueSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"messageId": id})
 }
 
+// ReplayResult is the wire shape of POST /api/replay: which event was
+// replayed, plus the fresh invocation's result.
+type ReplayResult struct {
+	Event store.EventRow `json:"event"`
+	InvokeResult
+}
+
 // InvokeResult is the wire shape of POST /api/invoke.
 type InvokeResult struct {
 	RequestID  string          `json:"requestId"`
@@ -588,6 +605,122 @@ func (e *Engine) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		DurationMs: res.DurationMs,
 		Logs:       res.Logs,
 	}
+	if res.Status == "success" {
+		out.Result = res.Payload
+	} else {
+		out.Error = res.Payload
+	}
+	if out.Logs == nil {
+		out.Logs = []logs.Line{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (e *Engine) handleTableItems(w http.ResponseWriter, r *http.Request) {
+	_, _, _, ddb, _ := e.state()
+	if ddb == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
+	page, apiErr := ddb.Scan(r.URL.Query().Get("name"), "", nil, nil, queryLimit(r, 20), nil)
+	if apiErr != nil {
+		writeError(w, http.StatusBadRequest, apiErr.Message)
+		return
+	}
+	items := page.Items
+	if items == nil {
+		items = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "more": page.LastKey != nil})
+}
+
+func (e *Engine) handleTableItemDelete(w http.ResponseWriter, r *http.Request) {
+	_, _, _, ddb, _ := e.state()
+	if ddb == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
+	var req struct {
+		Name string         `json:"name"`
+		Key  map[string]any `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || len(req.Key) == 0 {
+		writeError(w, http.StatusBadRequest, `expected body {"name": "...", "key": {...}}`)
+		return
+	}
+	if _, apiErr := ddb.Delete(req.Name, req.Key, "", nil, nil, false); apiErr != nil {
+		writeError(w, http.StatusBadRequest, apiErr.Message)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (e *Engine) handleQueuePeek(w http.ResponseWriter, r *http.Request) {
+	_, _, sqs, _, _ := e.state()
+	if sqs == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
+	msgs, apiErr := sqs.Peek(r.URL.Query().Get("name"), queryLimit(r, 10))
+	if apiErr != nil {
+		writeError(w, http.StatusBadRequest, apiErr.Message)
+		return
+	}
+	if msgs == nil {
+		msgs = []sqssvc.PeekedMessage{}
+	}
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+func (e *Engine) handleEvents(w http.ResponseWriter, r *http.Request) {
+	rows, err := e.st.RecentEvents(r.URL.Query().Get("function"), queryLimit(r, 20))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.EventRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// handleReplay re-runs a recorded event, byte for byte, through the
+// function's current code. The replay is itself recorded (type "replay"),
+// so history stays truthful.
+func (e *Engine) handleReplay(w http.ResponseWriter, r *http.Request) {
+	_, mgr, _, _, _ := e.state()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "config is being applied — retry in a moment")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, `expected body {"id": "<event id or prefix>"}`)
+		return
+	}
+	ev, err := e.st.EventByPrefix(req.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	res, err := mgr.Invoke(r.Context(), ev.Function, "replay", ev.Payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := ReplayResult{
+		Event: *ev,
+		InvokeResult: InvokeResult{
+			RequestID:  res.RequestID,
+			Status:     res.Status,
+			DurationMs: res.DurationMs,
+			Logs:       res.Logs,
+		},
+	}
+	out.Event.Payload = nil // the caller has it if they need it
 	if res.Status == "success" {
 		out.Result = res.Payload
 	} else {

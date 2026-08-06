@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pulse/internal/engine"
+	"pulse/internal/ui"
 )
 
 var stopCmd = &cobra.Command{
@@ -23,13 +24,13 @@ func runStop(_ *cobra.Command, _ []string) error {
 	}
 	info, ok := engine.Current(root)
 	if !ok {
-		fmt.Println("no engine running for this project")
+		fmt.Println(ui.Dim("○ no engine running for this project"))
 		return nil
 	}
-	fmt.Printf("stopping engine (pid %d)…\n", info.PID)
+	fmt.Println(ui.Dim(fmt.Sprintf("stopping engine (pid %d)…", info.PID)))
 	if err := engine.RequestShutdown(info, 5*time.Second); err != nil {
 		return err
 	}
-	fmt.Println("✓ stopped")
+	fmt.Printf("%s stopped — data, queues, and history are safe in .pulse/\n", ui.OK("✓"))
 	return nil
 }

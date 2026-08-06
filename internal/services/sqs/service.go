@@ -405,3 +405,43 @@ func internalErr(err error) *awsfacade.APIError {
 		Status:    500,
 	}
 }
+
+// PeekedMessage is a read-only view of a queued message.
+type PeekedMessage struct {
+	ID           string `json:"id"`
+	Body         string `json:"body"`
+	SentAt       int64  `json:"sentAt"`
+	VisibleAt    int64  `json:"visibleAt"`
+	ReceiveCount int    `json:"receiveCount"`
+}
+
+// Peek lists a queue's messages oldest-first without receiving them —
+// visibility and receive counts stay untouched.
+func (s *Service) Peek(queue string, limit int) ([]PeekedMessage, *awsfacade.APIError) {
+	if s.queue(queue) == nil {
+		return nil, errQueueMissing(queue)
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.st.DB().Query(
+		`SELECT id, body, sent_at, visible_at, receive_count FROM sqs_messages
+		 WHERE queue = ? ORDER BY sent_at LIMIT ?`, queue, limit)
+	if err != nil {
+		return nil, internalErr(err)
+	}
+	defer rows.Close()
+
+	var out []PeekedMessage
+	for rows.Next() {
+		var m PeekedMessage
+		if err := rows.Scan(&m.ID, &m.Body, &m.SentAt, &m.VisibleAt, &m.ReceiveCount); err != nil {
+			return nil, internalErr(err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, internalErr(err)
+	}
+	return out, nil
+}
