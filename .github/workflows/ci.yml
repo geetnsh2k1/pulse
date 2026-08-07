@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
 jobs:
@@ -23,6 +23,10 @@ jobs:
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
       - run: go vet ./...
       - run: go test -race ./...
+      # Perf bars (PLAN §1) run without the race detector — its 2-10×
+      # slowdown would measure the instrumentation, not the product.
+      - name: performance bars
+        run: go test ./internal/perf/ -v -count=1
       - run: go build ./...
 
   # Windows is build-only until beta (see PLAN.md risk #3): keep it compiling,

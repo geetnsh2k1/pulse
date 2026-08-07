@@ -47,7 +47,7 @@ pulse events list && pulse events replay <id>
 pulse stop && pulse start                 # state persists across restarts
 ```
 
-### Performance bars (from PRD KPIs — enforced by CI benchmarks)
+### Performance bars (from PRD KPIs — enforced by CI: internal/perf, no-race step)
 
 - Engine start → ready: **< 1s**
 - Warm invocation overhead (engine + IPC, excluding user code): **< 50ms**
@@ -320,6 +320,32 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 ---
 
 ## 9. Progress log
+
+- **2026-08-08 — P6 steps 1+3: perf bars enforced, releases wired
+  (Geetansh skipped the README/WHY step).** internal/perf/perf_test.go
+  gates all three PLAN §1 bars in CI — measured: engine ready **14ms**
+  (<1s bar), warm invoke median **16.9ms** (<50ms), engine+warm-runtime
+  RSS **50.4MB** (<200MB, via ps process-tree sum); skips under -race
+  (build-tag detection) and -short. ci.yml: dedicated no-race perf step,
+  and fixed the branch trigger — it said `main` but the repo default is
+  `master`, so CI had never run on pushes. Release machinery:
+  .goreleaser.yaml (v2 schema; darwin/linux/windows × amd64/arm64,
+  CGO_ENABLED=0, version stamped via ldflags, archives+checksums,
+  Homebrew tap block targeting geetnsh2k1/homebrew-pulse) +
+  .github/workflows/release.yml (tag v* → test → goreleaser). Makefile's
+  ldflags still had the pre-rename module path — fixed. Follow-up same
+  day: goreleaser v2 deprecated `brews` → migrated to `homebrew_casks`
+  (Casks/pulse.rb in the tap; covers macOS AND Linux arches; xattr
+  post-install hook strips Gatekeeper quarantine from the unsigned
+  binary); `goreleaser check` clean; full local snapshot release
+  validated end to end (5 platform archives + checksums + generated cask
+  + version stamped, 23s). Brew NAME CONFIRMED FREE: no `pulse` formula
+  in homebrew-core (nearest: pulseaudio/pulp) — install command is
+  `brew install --cask geetnsh2k1/pulse/pulse`. User-side to activate:
+  create PUBLIC homebrew-pulse repo (with README so a default branch
+  exists), add HOMEBREW_TAP_TOKEN secret (PAT, repo scope), commit+tag
+  v0.1.0; installs work for the world once the pulse repo goes public.
+
 
 - **2026-08-08 — Module path renamed (repo is live).** Geetansh pushed to
   github.com/geetnsh2k1/pulse (private for now); the day-zero placeholder

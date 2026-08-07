@@ -1,0 +1,60 @@
+# goreleaser config — `git tag v0.1.0 && git push --tags` cuts a release:
+# cross-compiled binaries, archives, checksums, and (once the tap repo
+# exists) an updated Homebrew formula.
+version: 2
+
+project_name: pulse
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/pulse
+    binary: pulse
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/geetnsh2k1/pulse/internal/version.Version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "pulse_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+# Homebrew tap — requires the geetnsh2k1/homebrew-pulse repo to exist and a
+# PAT secret with repo scope. Cask (not formula): goreleaser v2's supported
+# path for prebuilt CLI binaries; macOS-only, Linux users take the tarballs.
+homebrew_casks:
+  - repository:
+      owner: geetnsh2k1
+      name: homebrew-pulse
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/geetnsh2k1/pulse
+    description: "The missing dev server for AWS serverless — run your whole app locally in milliseconds"
+    # Unsigned binary: strip the quarantine bit so Gatekeeper lets it run.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/pulse"]
+          end
+
+release:
+  draft: false
+  prerelease: auto
