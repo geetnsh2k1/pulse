@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 // Every starter template must render into a project that passes strict

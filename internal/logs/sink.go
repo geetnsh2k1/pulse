@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 // Line is one log line; the wire shape is shared with the store.

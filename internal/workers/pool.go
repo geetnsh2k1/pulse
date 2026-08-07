@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
 )
 
 const (

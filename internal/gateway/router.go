@@ -6,7 +6,7 @@ package gateway
 import (
 	"strings"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 type Router struct {

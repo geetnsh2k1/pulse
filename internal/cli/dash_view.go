@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // The dashboard view: hand-rolled layout — a left column (functions,

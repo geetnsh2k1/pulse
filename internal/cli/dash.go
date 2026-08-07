@@ -13,10 +13,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"pulse/internal/engine"
-	"pulse/internal/logs"
-	"pulse/internal/store"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse ui — the live dashboard: functions, queue depths, streaming logs,

@@ -11,9 +11,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // maxBodyBytes mirrors API Gateway's 10MB payload cap.

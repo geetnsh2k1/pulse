@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 func requireBinary(t *testing.T, name string) {

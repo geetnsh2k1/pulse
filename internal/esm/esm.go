@@ -12,10 +12,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	"pulse/internal/services/sqs"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // pollWait is the internal long-poll per receive; it also bounds how long

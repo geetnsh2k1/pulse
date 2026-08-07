@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 // runtimeBinary is a resolved interpreter on this machine.

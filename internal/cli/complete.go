@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/templates"
+	"github.com/geetnsh2k1/pulse/internal/templates"
 )
 
 // Dynamic tab completion: names come from the current project's pulse.yaml,

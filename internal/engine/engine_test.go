@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/config"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 func testConfig(t *testing.T) *config.Config {

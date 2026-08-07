@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 func TestSinkPersistsFansOutAndCollects(t *testing.T) {

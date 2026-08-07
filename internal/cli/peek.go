@@ -10,11 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/config"
-	"pulse/internal/engine"
-	sqssvc "pulse/internal/services/sqs"
-	"pulse/internal/store"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	sqssvc "github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse peek — read a queue's messages without consuming them. Nothing

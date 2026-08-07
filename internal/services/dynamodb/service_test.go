@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"pulse/internal/config"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 func testService(t *testing.T) *Service {

@@ -12,9 +12,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"pulse/internal/config"
-	"pulse/internal/templates"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/templates"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // Bare `pulse init` on a terminal runs a three-question wizard instead of

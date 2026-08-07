@@ -12,7 +12,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 const debounce = 300 * time.Millisecond

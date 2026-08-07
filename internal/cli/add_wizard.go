@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 // Bare `pulse add` on a terminal asks what to add and walks the questions —

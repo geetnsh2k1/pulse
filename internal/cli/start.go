@@ -15,11 +15,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/engine"
-	"pulse/internal/gateway"
-	"pulse/internal/store"
-	"pulse/internal/ui"
-	"pulse/internal/version"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/gateway"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/version"
 )
 
 var flagPort int

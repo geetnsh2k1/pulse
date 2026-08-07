@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // lambdaResponse is the envelope functions return for structured responses.

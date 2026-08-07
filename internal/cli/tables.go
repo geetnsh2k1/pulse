@@ -10,11 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/config"
-	"pulse/internal/engine"
-	ddbsvc "pulse/internal/services/dynamodb"
-	"pulse/internal/store"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	ddbsvc "github.com/geetnsh2k1/pulse/internal/services/dynamodb"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse tables — look inside your data without aws-cli. Bare: all tables

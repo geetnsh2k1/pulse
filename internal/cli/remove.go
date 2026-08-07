@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"pulse/internal/config"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse remove — add's twin. Every removal is yaml surgery (comments

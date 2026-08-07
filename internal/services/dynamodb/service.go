@@ -12,9 +12,9 @@ import (
 	"strings"
 	"sync"
 
-	"pulse/internal/awsfacade"
-	"pulse/internal/config"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/awsfacade"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 const maxItemBytes = 400 * 1024 // AWS's per-item cap

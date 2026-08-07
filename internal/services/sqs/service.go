@@ -16,9 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"pulse/internal/awsfacade"
-	"pulse/internal/config"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/awsfacade"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 const (

@@ -17,9 +17,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 //go:embed shims/*

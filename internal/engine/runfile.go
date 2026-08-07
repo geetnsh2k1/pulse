@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 // RunInfo is written to .pulse/runtime/engine.json while an engine runs, so

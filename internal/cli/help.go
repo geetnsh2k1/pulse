@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // Styled --help: cobra's default template with section headings in the

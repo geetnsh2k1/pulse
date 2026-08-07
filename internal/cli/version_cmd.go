@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/ui"
-	"pulse/internal/version"
+	"github.com/geetnsh2k1/pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/version"
 )
 
 var versionCmd = &cobra.Command{

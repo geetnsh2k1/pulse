@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 func TestWatcherDetectsCodeAndConfigChanges(t *testing.T) {

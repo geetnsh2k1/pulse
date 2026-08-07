@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/logs"
 )
 
 // worker wraps one long-lived runtime process (a bootstrap shim running the

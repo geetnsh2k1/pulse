@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/engine"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 var stopCmd = &cobra.Command{

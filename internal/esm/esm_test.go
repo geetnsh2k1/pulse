@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	sqssvc "pulse/internal/services/sqs"
-	"pulse/internal/store"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	sqssvc "github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // The worker acks good jobs and reports jobs with {"fail":true} as batch

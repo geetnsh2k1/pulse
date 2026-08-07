@@ -20,17 +20,17 @@ import (
 	"sync"
 	"time"
 
-	"pulse/internal/awsfacade"
-	"pulse/internal/config"
-	"pulse/internal/esm"
-	"pulse/internal/gateway"
-	"pulse/internal/logs"
-	ddbsvc "pulse/internal/services/dynamodb"
-	sqssvc "pulse/internal/services/sqs"
-	"pulse/internal/store"
-	"pulse/internal/version"
-	"pulse/internal/watch"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/awsfacade"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/esm"
+	"github.com/geetnsh2k1/pulse/internal/gateway"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	ddbsvc "github.com/geetnsh2k1/pulse/internal/services/dynamodb"
+	sqssvc "github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/version"
+	"github.com/geetnsh2k1/pulse/internal/watch"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // Milestone is stamped into /health so clients can tell what this build

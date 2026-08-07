@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"pulse/internal/awsfacade"
+	"github.com/geetnsh2k1/pulse/internal/awsfacade"
 )
 
 // Do dispatches one AWS-JSON-protocol action (the façade routes

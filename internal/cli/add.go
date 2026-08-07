@@ -10,9 +10,9 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"pulse/internal/config"
-	"pulse/internal/engine"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse add <thing> — scaffolding that edits pulse.yaml for you (comments

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"pulse/internal/config"
-	"pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/store"
 )
 
 // testService builds a service over a temp store with a controllable clock.

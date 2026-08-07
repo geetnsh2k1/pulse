@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/engine"
-	sqs "pulse/internal/services/sqs"
-	"pulse/internal/store"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	sqs "github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 var (

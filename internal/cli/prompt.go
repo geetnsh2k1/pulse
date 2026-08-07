@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // Generic interactive prompts — the init wizard's pattern, reusable by

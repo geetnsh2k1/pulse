@@ -2,7 +2,7 @@
 
 **Product:** Local AWS serverless development platform ("VS Code for serverless") — run, trigger, and inspect Lambda-based apps entirely on a laptop, with high-fidelity service mocks and instant feedback. Based on the PRD (`Executive Summary.pdf`), narrowed to a shippable MVP.
 
-**Working name:** `pulse` (from this folder). CLI `pulse`, config `pulse.yaml`. Trivial to rename — flagged as an open question.
+**Working name:** `pulse` — repo github.com/geetnsh2k1/pulse (private). CLI `pulse`, config `pulse.yaml`. Final public-name check (collisions/trademark) still open before any public release.
 
 **Decisions locked (2026-07-29):**
 
@@ -320,6 +320,14 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 ---
 
 ## 9. Progress log
+
+- **2026-08-08 — Module path renamed (repo is live).** Geetansh pushed to
+  github.com/geetnsh2k1/pulse (private for now); the day-zero placeholder
+  `pulse` module became `github.com/geetnsh2k1/pulse` in one pass — go.mod
+  + 54 files' imports, zero stragglers, suite -race green, binaries
+  rebuilt, live smoke clean. P6 is unblocked: releases/goreleaser/Homebrew
+  and `go install` all have a real path now.
+
 
 - **2026-08-08 — GUIDE.md rewritten as proper documentation.** New arc:
   1 Start here (tour first, manual path with explicit Checkpoints) ·

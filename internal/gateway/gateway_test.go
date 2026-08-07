@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"pulse/internal/config"
-	"pulse/internal/logs"
-	"pulse/internal/store"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 // ---- response-mapping tests with a canned invoker ----

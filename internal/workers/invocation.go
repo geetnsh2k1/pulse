@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"pulse/internal/logs"
+	"github.com/geetnsh2k1/pulse/internal/logs"
 )
 
 // Invocation is one request to run a function. It resolves exactly once.

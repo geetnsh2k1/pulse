@@ -13,15 +13,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/awsfacade"
-	"pulse/internal/config"
-	"pulse/internal/engine"
-	"pulse/internal/logs"
-	dynamodb "pulse/internal/services/dynamodb"
-	sqs "pulse/internal/services/sqs"
-	"pulse/internal/store"
-	"pulse/internal/ui"
-	"pulse/internal/workers"
+	"github.com/geetnsh2k1/pulse/internal/awsfacade"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/logs"
+	dynamodb "github.com/geetnsh2k1/pulse/internal/services/dynamodb"
+	sqs "github.com/geetnsh2k1/pulse/internal/services/sqs"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/workers"
 )
 
 var (

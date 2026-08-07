@@ -13,10 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pulse/internal/config"
-	"pulse/internal/engine"
-	"pulse/internal/store"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/engine"
+	"github.com/geetnsh2k1/pulse/internal/store"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // pulse tour — a hands-on five-minute walkthrough. It builds a real project

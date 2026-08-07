@@ -1,4 +1,4 @@
-module pulse
+module github.com/geetnsh2k1/pulse
 
 go 1.25.0
 

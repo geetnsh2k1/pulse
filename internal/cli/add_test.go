@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 const addTestYAML = `project: demo

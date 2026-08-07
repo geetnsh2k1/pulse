@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"pulse/internal/cli"
-	"pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/cli"
+	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 func main() {
