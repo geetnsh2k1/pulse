@@ -321,6 +321,22 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-08-08 — pulse-website: separate Next.js site repo (Geetansh chose
+  Vercel + PostHog).** ~/Desktop/pulse-website: Next 15 App Router +
+  Tailwind v4 + Geist/JetBrains Mono via next/font; landing page ported
+  into components (hero terminal animation as a client component,
+  reduced-motion safe); brand tokens as @theme CSS vars; metadata/OG/
+  twitter cards, sitemap.ts, robots.ts; PostHog wired with deliberate
+  events only (copy_install{method} = the conversion, cta_click, outbound,
+  section_view funnel; autocapture off, respects DNT, no-ops without
+  NEXT_PUBLIC_POSTHOG_KEY). Static prerender build green; verified live on
+  localhost. Handoff = user: create GH repo + push, import to Vercel, set
+  PostHog env vars, later point docs/index.html at the new site as a
+  redirect. Rationale recorded: single-page SEO was already fine — the
+  move buys blog/docs growth (the real dev-tool SEO engine), OG machinery,
+  PR previews, and analytics.
+
+
 - **2026-08-08 — Go-public kit (Geetansh chose Apache-2.0).** LICENSE
   (canonical Apache-2.0 text); README fully rewritten for a public
   audience (wave wordmark, badges, thesis, three install methods incl.
@@ -708,3 +724,68 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
   API (/health, /api/functions|triggers|resources, /api/shutdown) and stale-safe
   runfile, three starter templates (validated forever by CI test). Engine ready in
   ~1–3ms (bar: <1s). `go test -race`, vet, gofmt all clean. Next: **M1 invoke core**.
+
+---
+
+## 10. Windows release plan (parked until a stable macOS release)
+
+**Gate to start:** a macOS release considered stable (no critical issues for
+~2 weeks of real use), and the org/name decision settled — Scoop/winget
+identifiers bake the owner name in, same as the brew tap did.
+
+### W1 — Truth first: make Windows CI run the real suite (~½ day)
+- Flip the `build-windows` job from build-only to `go test ./...` on
+  `windows-latest` (runners ship real Python + Node, so worker/engine/queue
+  tests actually execute).
+- Start without `-race` (the race detector needs a C toolchain on Windows;
+  add it later if the runner's mingw cooperates).
+- Add justified skips: the perf gate shells out to `ps` → skip on
+  `GOOS=windows` (bars stay enforced on mac/linux).
+- **Output: the concrete failure list.** Everything after this is fixing
+  known things, not exploring.
+
+### W2 — The fixes (1–2 days; known list + W1 fallout)
+1. **Python venv paths (the guaranteed breakage):** all `.venv/bin/python`
+   assumptions → `.venv\Scripts\python.exe` on Windows: workers/runtime.go
+   resolution, doctor's findPython, init's pip step, and every hint string
+   that prints the activate-free venv path.
+2. **Interpreter candidates:** Windows installs expose `python.exe` (and
+   the `py` launcher), rarely `python3` — extend the candidate list per
+   GOOS.
+3. **ANSI on legacy consoles:** one `SetConsoleMode(...ENABLE_VIRTUAL_
+   TERMINAL_PROCESSING)` call via x/sys/windows in a GOOS-guarded ui init;
+   Windows Terminal needs nothing.
+4. **Path-literal audit:** grep for hardcoded `/` joins (`.venv/bin`,
+   `services/…` hints); ensure filepath.Join everywhere that touches disk.
+5. **Process semantics verification:** Ctrl+C (os.Interrupt) path, timeout
+   kills (Process.Kill), engine stop stays signal-free via control API —
+   expected fine by design, verify under W1's tests.
+6. Watch item (not expected, but named): Windows file locking vs hot
+   reload — a worker holding a .py/.mjs open while the watcher swaps it.
+   Reads-then-closes should make this a non-issue; W3 confirms.
+- **Acceptance: full suite green on windows-latest, permanently in CI.**
+
+### W3 — Human smoke test (~½ day)
+CI catches logic; a human catches feel. On a real Win 11 machine or VM:
+the tour end-to-end in Windows Terminal AND PowerShell; a legacy cmd.exe
+sanity pass (colors readable); python + todo-api templates; monitor
+dashboard keys; Ctrl+C/stop/restart persistence. Mirror ~15 checkpoints
+from the layman audit.
+
+### W4 — Distribution (~½–1 day, only after W2 is green)
+- **Scoop** (the Homebrew of Windows CLIs): goreleaser `scoops:` block +
+  a `scoop-pulse` bucket repo — the exact mirror of the brew tap flow.
+  `scoop bucket add pulse …` → `scoop install pulse`.
+- **scripts/install.ps1**: PowerShell twin of install.sh
+  (`irm …/install.ps1 | iex`), arch detect, latest release, PATH note.
+- Docs: Windows install section in README + site; "Windows Terminal
+  recommended" note; flip the beta label only when W3 passed.
+
+### W5 — Later polish
+- **winget** submission (microsoft/winget-pkgs PRs; goreleaser can
+  automate) once the repo is public with 2–3 stable releases.
+- windows/arm64 builds (currently excluded in goreleaser) if asked for.
+
+**Total estimate: ~3–4 focused days.** UX-protection rule throughout:
+Windows is not advertised anywhere until W3 passes — the release zip
+exists for the adventurous, labeled beta, and that's all.
