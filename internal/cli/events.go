@@ -27,8 +27,9 @@ var (
 )
 
 var eventsCmd = &cobra.Command{
-	Use:   "events",
-	Short: "List recorded trigger events — the project's history",
+	Use:     "events",
+	Aliases: []string{"history"},
+	Short:   "List recorded trigger events — the project's history",
 	Long: `Every trigger (HTTP request, queue delivery, invoke) is recorded with its
 exact event payload and outcome. This lists them, newest first; any of them
 can be re-run with ` + "`pulse events replay <id>`" + `.`,

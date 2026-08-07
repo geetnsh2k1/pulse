@@ -98,3 +98,39 @@ func TestRecentEventsAndPrefixLookup(t *testing.T) {
 		t.Error("missing prefix must error")
 	}
 }
+
+func TestRequestByPrefix(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	_ = s.StartInvocation("req-aaaa", "worker", "sqs", []byte(`{"n":1}`), 1000)
+	_ = s.CompleteInvocation("req-aaaa", "error", []byte(`{"errorMessage":"boom"}`), "boom", 1100, 100)
+	_ = s.StartInvocation("req-bbbb", "worker", "sqs", []byte(`{}`), 1003)
+	_ = s.InsertLog(LogRow{Function: "worker", RequestID: "req-aaaa", Stream: "stdout", TS: 1001, Text: "starting"})
+	_ = s.InsertLog(LogRow{Function: "worker", RequestID: "req-aaaa", Stream: "stderr", TS: 1002, Text: "boom"})
+	_ = s.InsertLog(LogRow{Function: "worker", RequestID: "req-bbbb", Stream: "stdout", TS: 1003, Text: "other request"})
+
+	story, err := s.RequestByPrefix("req-a")
+	if err != nil {
+		t.Fatalf("RequestByPrefix: %v", err)
+	}
+	if story.Invocation.Status != "error" || story.Invocation.DurationMs != 100 {
+		t.Errorf("invocation = %+v", story.Invocation)
+	}
+	if string(story.Event) != `{"n":1}` {
+		t.Errorf("event = %s", story.Event)
+	}
+	if len(story.Logs) != 2 || story.Logs[0].Text != "starting" || story.Logs[1].Stream != "stderr" {
+		t.Errorf("logs = %+v", story.Logs)
+	}
+
+	if _, err := s.RequestByPrefix("req-"); err == nil {
+		t.Error("ambiguous prefix must error")
+	}
+	if _, err := s.RequestByPrefix("zzz"); err == nil {
+		t.Error("unknown prefix must error")
+	}
+}

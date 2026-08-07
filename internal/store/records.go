@@ -192,3 +192,65 @@ func reverse(rows []LogRow) {
 		rows[i], rows[j] = rows[j], rows[i]
 	}
 }
+
+// RequestStory is everything one request id touched: the invocation, its
+// exact event payload, and every log line it produced.
+type RequestStory struct {
+	Invocation InvocationRow `json:"invocation"`
+	Event      []byte        `json:"event,omitempty"`
+	Result     []byte        `json:"result,omitempty"`
+	Logs       []LogRow      `json:"logs"`
+}
+
+// RequestByPrefix assembles the story for a full id or unique prefix.
+func (s *Store) RequestByPrefix(prefix string) (*RequestStory, error) {
+	rows, err := s.db.Query(
+		`SELECT id, function, source, status, COALESCE(error, ''), started_at,
+		        COALESCE(duration_ms, 0), payload, result
+		 FROM invocations WHERE id LIKE ? ORDER BY started_at DESC LIMIT 2`, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var found []RequestStory
+	for rows.Next() {
+		var st RequestStory
+		var payload, result []byte
+		if err := rows.Scan(&st.Invocation.ID, &st.Invocation.Function, &st.Invocation.Source,
+			&st.Invocation.Status, &st.Invocation.Error, &st.Invocation.StartedAt,
+			&st.Invocation.DurationMs, &payload, &result); err != nil {
+			return nil, err
+		}
+		st.Event, st.Result = payload, result
+		found = append(found, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	switch len(found) {
+	case 0:
+		return nil, fmt.Errorf("no request matches %q — run `pulse events` to see recent ids", prefix)
+	case 1:
+		// fall through
+	default:
+		return nil, fmt.Errorf("%q matches more than one request — use more characters of the id", prefix)
+	}
+
+	story := &found[0]
+	lrows, err := s.db.Query(
+		`SELECT function, COALESCE(request_id, ''), stream, ts, line
+		 FROM logs WHERE request_id = ? ORDER BY ts, id`, story.Invocation.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var l LogRow
+		if err := lrows.Scan(&l.Function, &l.RequestID, &l.Stream, &l.TS, &l.Text); err != nil {
+			return nil, err
+		}
+		story.Logs = append(story.Logs, l)
+	}
+	return story, lrows.Err()
+}

@@ -321,6 +321,38 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-08-08 — GUIDE.md rewritten as proper documentation.** New arc:
+  1 Start here (tour first, manual path with explicit Checkpoints) ·
+  2 Three ideas · 3 Build (init wizard transcript, CURRENT amber banner
+  with try-lines, the existing battle-tested 3.3–3.10 arcs kept, 3.11 now
+  add+remove together) · 4 Inspect (console vocabulary, logs/grep/request
+  story with real output, history+replay, pulse monitor frame + keys,
+  tables/peek, doctor) · 5 Everyday · 6 yaml reference · 7 cheat sheet ·
+  8 troubleshooting (doctor first, replay row added) · 9 not-built (was
+  claiming P5 unbuilt — now truthful: P6 + backlog only). Interactive
+  paths (bare-command wizards/pickers) are first-class throughout; every
+  output shown is a real capture from this session's runs.
+
+
+- **2026-08-08 — P5 complete: log search + per-request story view +
+  history.** `pulse logs --grep <text>` (case-insensitive substring,
+  auto-widens the window to 1000 lines unless -n given, also filters
+  --follow streams, no-match hint); `pulse logs --request <id>` (prefix ok)
+  prints one request end to end — header (source → function · status ·
+  duration · time), the exact event (clipped pretty JSON), every log line,
+  the result or error, and the replay command for that id — via
+  store.RequestByPrefix (+ GET /api/request; engine-or-direct like the
+  rest); `pulse history` is now an alias of `pulse events` (the list
+  already joins outcomes — it IS the invocation history). Store test for
+  the story query (incl. ambiguous/unknown prefixes). Live-verified on the
+  webhook project: grep found the typed text case-insensitively, the
+  failed delivery's story showed the poisoned Records payload +
+  ApproximateReceiveCount 3 + the raise, and the footer pointed at replay.
+  **P5 (Inspect Everything) is DONE** — replay, doctor, monitor dashboard,
+  log search, request stories, history. Next: P6 Team Ready (packaging,
+  docs site, cloud sync, Windows) — gated on the git remote + module
+  rename, plus the deferred desktop-app decision.
+
 - **2026-08-07 — Audit-fix round (everything from the layman report,
   cleared before P5 resumes).** (1) Banner try-lines now take their bodies
   from the project's events/*.json (matched by routeKey; json.Compact;

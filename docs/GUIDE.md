@@ -1,4 +1,4 @@
-# pulse — user guide
+# ⚡ pulse — the guide
 
 pulse runs AWS-style serverless apps — Lambda functions, an HTTP API, SQS
 queues, DynamoDB tables — **entirely on your machine**. No AWS account, no
@@ -7,20 +7,36 @@ real AWS later.
 
 **Contents**
 
-1. [Get started in 2 minutes](#1-get-started-in-2-minutes)
+1. [Start here](#1-start-here) — tour or two-minute manual start
 2. [The three ideas you need](#2-the-three-ideas-you-need)
-3. [Each functionality, with an example](#3-each-functionality-with-an-example)
-4. [pulse.yaml reference](#4-pulseyaml-reference)
-5. [Command cheat sheet](#5-command-cheat-sheet)
-6. [When something goes wrong](#6-when-something-goes-wrong)
-7. [Not built yet](#7-not-built-yet)
+3. [Build](#3-build) — every piece, step by step
+4. [Inspect](#4-inspect) — logs, history, replay, the live dashboard
+5. [Everyday things](#5-everyday-things)
+6. [pulse.yaml reference](#6-pulseyaml-reference)
+7. [Command cheat sheet](#7-command-cheat-sheet)
+8. [When something goes wrong](#8-when-something-goes-wrong)
+9. [What pulse doesn't do yet](#9-what-pulse-doesnt-do-yet)
+
+Throughout the guide: commands you type are in `bash` blocks, and the block
+right after shows what you should see — treat those as **checkpoints**.
 
 ---
 
-## 1. Get started in 2 minutes
+## 1. Start here
 
-Never used pulse? `pulse tour` walks you through the whole loop hands-on,
-one Enter press per step, in five minutes. Or go manual:
+### The guided way (recommended, 5 minutes)
+
+```bash
+pulse tour
+```
+
+The tour builds a real project in `./pulse-tour` and walks the whole loop —
+create, start, call over HTTP, add a background worker, send it a job,
+replay history — one Enter press per step. Nothing is simulated: every step
+runs the exact command it shows you. Press `q` anytime to stop; the folder
+is yours to keep or delete.
+
+### The manual way (2 minutes)
 
 ```bash
 pulse init shop --template api-and-worker --lang python
@@ -28,18 +44,39 @@ cd shop
 pulse start
 ```
 
-New terminal:
+**Checkpoint** — the banner appears, ending with:
+
+```
+ready in 33ms — code & pulse.yaml changes apply live · Ctrl+C to stop
+```
+
+Leave that terminal running (it's your local cloud being ON) and open a new
+one. The banner printed a `try` line — paste it, or type:
 
 ```bash
 curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'
-# → 201 {"id":"…","status":"pending",…}
-
-curl localhost:3000/orders/<that-id>
-# → {"status":"processed",…}   ← a background worker updated it
 ```
 
-That's an API, a queue, a worker, and a database — all local. `init`
+**Checkpoint** — a `201` with a fresh order id:
+
+```
+{"id":"e9b4e51a-…","sku":"A1","qty":2,"status":"pending","createdAt":"…"}
+```
+
+Watch the first terminal: within a second a background worker picks the
+order off a queue and processes it. Now read it back (your id, not this one):
+
+```bash
+curl localhost:3000/orders/e9b4e51a-…
+```
+
+**Checkpoint** — `"status": "processed"`. That round trip was an API, a
+queue, a worker, and a database — all local, all real SDK calls. `init`
 installed the dependencies for you; nothing to activate or configure.
+
+New to any command? Run it **bare** — `pulse init`, `pulse add`,
+`pulse logs`, `pulse remove` all ask you questions on a terminal instead of
+demanding flags. Flags exist for scripts and muscle memory.
 
 ---
 
@@ -47,7 +84,8 @@ installed the dependencies for you; nothing to activate or configure.
 
 **1. `pulse.yaml` is the blueprint.** It declares three things:
 *functions* (your code), *triggers* (what runs them), *resources* (queues
-and tables). Everything pulse does starts from this file.
+and tables). Everything pulse does starts from this file — and `pulse add`
+/ `pulse remove` edit it for you.
 
 **2. Functions run two ways.**
 - **Sync** — you call and wait for the answer: an HTTP request, or `pulse invoke`.
@@ -56,45 +94,78 @@ and tables). Everything pulse does starts from this file.
 
 **3. `pulse start` is your local cloud being ON.** APIs answer, queues
 deliver, tables exist — and both code edits and `pulse.yaml` edits apply
-live, no restarts.
+live, no restarts. Everything that happens is recorded, so you can search
+it, inspect it, and replay it later (section 4).
 
 ---
 
-## 3. Each functionality, with an example
+## 3. Build
+
+Each section answers *why you'd use the thing*, then walks it with real
+commands and the output to expect.
 
 ### 3.1 Create a project — `pulse init`
 
 Creates a folder with working sample code and installs its dependencies
 (npm, or a Python `.venv` that pulse finds by itself — you never activate it).
 
+The interactive way — three questions, Enter picks the default:
+
 ```bash
-pulse init shop --template api-and-worker --lang python
+pulse init
 ```
 
-Or just `pulse init` with no arguments — it asks three quick questions
-(name, template, language; Enter picks the default) and does the same thing.
+```
+? project name (my-app) › shop
+? template — what should it start with?
+    1. api-and-worker   ★ CRUD API + background worker + table — the full offline demo
+    2. hello              One function behind GET /hello — the smallest start
+    3. todo-api           Real CRUD on one table — create, list, complete, delete
+    4. webhook-relay      Receive webhooks, ack fast, process with retries + DLQ
+  pick 1-4 (1) ›
+? language  1. node  2. python  (1) › 2
+✓ created project shop from template api-and-worker (python) (9 files)
+  ✓ creating .venv and installing python dependencies — done (6.6s)
+```
 
-- Templates (all take `--lang node|python`): `hello` — one function, the
-  smallest start · `todo-api` — real CRUD on one table · `webhook-relay` —
-  ack-fast webhook handling with retries + DLQ · `api-and-worker` — the full
-  demo (API + queue + worker + table). `pulse init --list` shows them.
-- `--no-install` skips dependency installation.
+Or fully scripted: `pulse init shop --template api-and-worker --lang python`
+(`--no-install` skips dependencies; `pulse init --list` shows templates).
+
+The templates are a **learning path** — each adds exactly one concept:
+
+| Template | What it teaches |
+|---|---|
+| `hello` | One function behind `GET /hello` — the smallest start |
+| `todo-api` | Real CRUD on one table (create, list, complete, delete) |
+| `webhook-relay` | Ack-fast webhook handling with retries + a dead-letter queue |
+| `api-and-worker` ★ | Everything together: API + queue + worker + table |
 
 ### 3.2 Start your local cloud — `pulse start`
 
-```
-pulse 0.1.0-dev — project shop (us-east-1)
-  functions  3 (createOrder, getOrder, worker)   ← your code
-  api        http://localhost:3000                ← your REST API
-  routes     POST /orders → createOrder           ← who answers what
-             GET /orders/{id} → getOrder
-  aws        http://127.0.0.1:50407 (sqs, dynamodb)   ← what the AWS SDK talks to
-  control    http://127.0.0.1:50411                ← pulse's own plumbing
-engine ready in 33ms — code & pulse.yaml changes apply live · Ctrl+C to stop
+```bash
+pulse start
 ```
 
-Leave it running. This terminal shows everything that happens (see 3.12).
-Port 3000 taken? `pulse start --port 3210`.
+```
+⚡ pulse 0.1.0-dev — shop (us-east-1)
+  functions  createOrder · getOrder · worker
+  api        http://localhost:3000
+  routes     POST /orders → createOrder
+             GET /orders/{id} → getOrder
+  try        curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'
+             curl localhost:3000/orders/123
+  aws        http://127.0.0.1:62552 (sqs, dynamodb)
+  control    http://127.0.0.1:62556
+ready in 99ms — code & pulse.yaml changes apply live · Ctrl+C to stop
+```
+
+Reading it top to bottom: your **functions**, your **api** URL, which route
+calls which function, ready-to-paste **try** commands (their bodies come
+from the project's `events/` samples, so they actually succeed), the local
+**aws** endpoint the SDK talks to, and pulse's own **control** port.
+
+Leave it running — this terminal streams everything that happens (the full
+vocabulary is in 4.1). Port 3000 taken? `pulse start --port 3210`.
 
 ### 3.3 HTTP APIs
 
@@ -124,7 +195,8 @@ curl localhost:3000/orders/42        # → 200 {"id": "42"}
 ### 3.4 Create your own function — `pulse add function`
 
 One command creates a function: the `pulse.yaml` entry plus a working,
-commented handler file.
+commented handler file. (Bare `pulse add` asks what you want to add and
+walks you through it — no flags to remember.)
 
 ```bash
 pulse add function notifier
@@ -134,6 +206,7 @@ pulse add function notifier
 ✓ added function notifier (python3.12)
   code   services/notifier/handler.py
   try    pulse invoke notifier -d '{"hello":1}'
+  wire   pulse add route GET /notifier --function notifier · pulse add queue notifier-jobs --worker notifier
 ```
 
 Open `services/notifier/handler.py` — it's the classic Lambda shape, yours
@@ -169,7 +242,8 @@ pulse invoke notifier -d '{"hello":1}'
 
 The event JSON is simply what your function receives as `event` — pulse
 passes it through untouched. Longer event? Put it in a file:
-`pulse invoke notifier -e event.json`.
+`pulse invoke notifier -e event.json`. No function name? Bare
+`pulse invoke` lets you pick one.
 
 - `invoke` skips URLs and queues on purpose — it tests **the function
   alone**. (Wiring the function up comes next.)
@@ -246,7 +320,8 @@ pulse send emails '{"to":"ana@example.com"}'
 
 That log line shows the one thing to know about workers: queue messages
 arrive wrapped in a `Records` **batch** (usually of one), and your message
-is each record's `body` — as a string.
+is each record's `body` — as a string. (The very first job a project ever
+completes also earns a one-time 🎉 line.)
 
 **Step 3 — make it a real worker.** Edit
 `services/send-email/handler.py` to the standard three-line pattern and
@@ -288,7 +363,7 @@ Good to know:
 - Sending to an undeclared queue **auto-creates it** (declare it only to
   configure retries/DLQ — next section).
 - `pulse send` with the engine stopped parks the message; it's delivered on
-  the next `pulse start`.
+  the next `pulse start`. `pulse peek emails` shows what's waiting (4.5).
 
 ### 3.7 Retries and the dead-letter queue
 
@@ -327,6 +402,8 @@ curl -X POST localhost:3000/orders -d '{"sku":"X","fail":true}'
   `batchItemFailures` instead of raising (see the AWS docs pattern).
 - Keep `visibilityTimeout` **larger than** the worker's `timeout` in real
   projects (the demo uses 5s so retries are fast to watch).
+- Between attempts, `pulse peek order-events` shows the message as
+  `retried ×2`; after the ☠, `pulse list` shows it sitting in the DLQ.
 
 ### 3.8 Saving data — tables
 
@@ -371,8 +448,9 @@ item = customers.get_item(Key={"email": "ana@x.com"}).get("Item")
 - Tables don't auto-create (queues do) — a table needs *you* to choose its
   key. Use an undeclared one and the error hands you the exact yaml snippet
   to paste.
-- Data survives restarts. `pulse list` shows item counts; the AWS CLI v2 can
-  `dynamodb scan` against the `aws` URL from the banner.
+- Data survives restarts. Look inside anytime with `pulse tables customers`
+  (4.5); the AWS CLI v2 can also `dynamodb scan` against the banner's
+  `aws` URL.
 
 **One function, many tables?** Nothing to wire — triggers declare *who
 calls* a function; tables are just data your code opens by name, as many as
@@ -399,12 +477,12 @@ pulse add table customers --pk email --function createOrder
 ```
 
 Repeat `--function` for several functions; on an already-declared table it
-wires env only. Reading names from `env:` instead of hardcoding
-`"orders"` is a deploy habit, not a pulse rule — in real AWS, table names usually carry the stage
-(`orders-dev`, `orders-prod`), so code takes them from env and runs
-unchanged everywhere. Locally either style works. (One real-AWS difference:
-there, each function also needs IAM permission per table — locally
-everything is allowed.)
+wires env only. Reading names from `env:` instead of hardcoding `"orders"`
+is a deploy habit, not a pulse rule — in real AWS, table names usually carry
+the stage (`orders-dev`, `orders-prod`), so code takes them from env and
+runs unchanged everywhere. Locally either style works. (One real-AWS
+difference: there, each function also needs IAM permission per table —
+locally everything is allowed.)
 
 **Worked example — GET an order by id (route + table together)**
 
@@ -480,14 +558,16 @@ config serving:
 
 ```
 ✗ pulse.yaml changed but has problems — keeping the current config:
+  pulse.yaml: 1 problem found
   ✗ triggers[2].function: unknown function "workr" (did you mean "worker"?)
 ```
 
-### 3.11 Scaffolding the rest — `pulse add`
+### 3.11 Growing and shrinking — `pulse add` / `pulse remove`
 
-You've met the whole family now — this is the recap. `pulse add` edits
-`pulse.yaml` for you (your comments survive; changes apply live if the
-engine runs):
+You've met the add family — this is the recap, plus its inverse. Both edit
+`pulse.yaml` surgically (your comments survive, the result is validated or
+nothing changes, and changes apply live). Both work **bare** on a terminal:
+they ask what and which, no flags needed.
 
 ```bash
 pulse add function notifier                       # code + yaml entry        (3.4)
@@ -496,18 +576,37 @@ pulse add queue emails --worker send-email        # queue + worker + wiring  (3.
 pulse add table customers --pk email              # declare a table          (3.8)
 ```
 
+```bash
+pulse remove function notifier    # also drops triggers pointing at it
+pulse remove route POST /notify
+pulse remove queue emails         # also drops its sqs trigger
+pulse remove table customers      # also cleans env vars pointing at it
+```
+
+`remove` is deliberately conservative: **code folders and stored data are
+never deleted** — only the wiring. Each removal says what it kept (the code
+path, the rows in `.pulse/`) so nothing disappears silently. A queue that's
+another queue's dead-letter target refuses removal until you rewire it.
+
 - One function may serve many triggers — `notifier` above could handle a
   route *and* a queue.
-- Hand-editing `pulse.yaml` works exactly as well; `pulse add` is just the
-  shortcut.
+- Hand-editing `pulse.yaml` works exactly as well; `add`/`remove` are just
+  the shortcuts.
 
-### 3.12 Logs — what you see and where
+---
 
-The `pulse start` console streams everything:
+## 4. Inspect
+
+Everything that happens in pulse is recorded — every trigger with its exact
+payload, every log line, every outcome. This section is how you look at it.
+
+### 4.1 The console — what you see and where
+
+The `pulse start` terminal streams everything, color-coded:
 
 | Line | Meaning |
 |---|---|
-| `POST /orders → api · 201 · 12ms` | An HTTP request and its outcome |
+| `POST /orders → createOrder · 201 · 12ms` | An HTTP request and its outcome |
 | `⚙ sqs order-events → worker · batch of 1 · ok` | A queue delivery |
 | `  worker \| processed order …` | A function's `print`/`console.log` |
 | `  worker ! Traceback …` | A function's stderr |
@@ -515,26 +614,61 @@ The `pulse start` console streams everything:
 | `✓ config applied — …` | pulse.yaml change picked up |
 | `☠ … moved to dead-letter queue` | A message gave up retrying |
 | `✱ auto-created queue "x"` | You sent to an undeclared queue |
+| `🎉 first background job processed` | Once per project, on the first async win |
 
-Per-function history and live tail:
+Every function gets its own stable color, so interleaved logs stay
+readable. (No colors in pipes, CI, or with `NO_COLOR`/`--no-color`.)
 
-```bash
-pulse logs worker -n 50        # recent lines (works with engine stopped)
-pulse logs worker --follow     # live stream
-```
-
-### 3.13 Event history & replay — time travel for debugging
-
-Every trigger that ever hit a function — HTTP request, queue delivery,
-invoke — is recorded with its **exact event payload** and outcome:
+### 4.2 Logs — tail, search, and one request's story
 
 ```bash
-pulse events
+pulse logs worker -n 50               # recent lines (works with engine stopped)
+pulse logs worker --follow            # live stream
+pulse logs worker --grep "order-17"   # search the last 1000 lines (case-insensitive)
+```
+
+The 8-character **request id** shown everywhere (invoke results, events,
+the console) unlocks the deepest view — everything about one request:
+
+```bash
+pulse logs --request d90e5295
 ```
 
 ```
-  8931cf5b  Aug  5 01:01   sqs    → processWebhook · error · 1ms
+⚡ request d90e5295 sqs → processWebhook · error · 2ms · 00:08
+
+event
+  {
+    "Records": [
+      { …the exact payload that arrived, pretty-printed… }
+  … 6 more line(s)
+
+logs
+  00:08:15.903  stderr  Traceback (most recent call last): …
+
+error
+  RuntimeError: webhook 3625d493 failed on purpose (attempt 3)
+
+re-run it against your current code: `pulse events replay d90e5295`
+```
+
+One screen: what arrived, what the function said, how it ended — and the
+exact command to re-run it.
+
+### 4.3 History & replay — time travel for debugging
+
+Every trigger that ever hit a function is recorded with its **exact event
+payload** and outcome:
+
+```bash
+pulse events          # `pulse history` works too
+```
+
+```
+  8931cf5b  Aug  5 01:01   sqs    → processWebhook · error   · 1ms
   7275f6ee  Aug  5 01:01   http   → receiveWebhook · success · 1ms
+
+replay any: `pulse events replay <id>` · narrow: `--function <fn>` · more: `-n 50`
 ```
 
 **Replay** fires a recorded event again, byte for byte, through the code
@@ -543,7 +677,7 @@ worker yesterday → fix the handler → replay the *actual* event → watch it
 pass. No reconstructing inputs from log fragments.
 
 ```bash
-pulse events replay 8931cf5b     # a unique id prefix is enough
+pulse events replay 8931cf5b     # a unique id prefix is enough; bare = pick from a list
 ```
 
 ```
@@ -555,31 +689,123 @@ pulse events replay 8931cf5b     # a unique id prefix is enough
 - Replay invokes the function **directly** with the stored event (like the
   Lambda console's "test" button) — it doesn't re-queue or re-send anything.
 - Replays are recorded too (type `replay`), so history stays truthful.
-- `--function worker -n 50` filters the list; exit code follows the outcome
-  (CI-friendly); works with the engine stopped.
+- Exit code follows the outcome (CI-friendly); works with the engine stopped.
 
-### 3.14 Seeing what exists — `pulse list` / `pulse validate`
+### 4.4 The live dashboard — `pulse monitor`
+
+One full-screen view of the running project (start the engine first):
+
+```bash
+pulse monitor
+```
+
+```
+⚡ pulse shop · ● live · api http://localhost:3000
+functions                      logs — / filters
+ createOrder        12✓        14:02:11 createOrder | order 9de0… saved
+ worker             11✓ 1✗     14:02:11 ⚙ order-events → worker · ok
+ getOrder           30✓        14:02:12 worker | processed order 9de0…
+queues
+ order-events       0·0·0
+ order-events-dlq   1·0·0 !
+
+events — tab to focus
+▸ 8931cf5b 14:01 sqs → worker · error
+q quit · tab focus events · ↑↓ scroll/select · Enter replay · / filter
+```
+
+- Functions with their success/failure counts; queue depths refresh every
+  second (a DLQ holding messages turns red).
+- The log pane streams live — press `/` and type to filter it as it flows.
+- `tab` onto the events strip, arrow to one, **Enter replays it** — the
+  outcome appears in the footer.
+
+### 4.5 Look inside your data — `pulse tables` / `pulse peek`
+
+No aws-cli needed to answer "what's in there right now?":
+
+```bash
+pulse tables                   # every table with item counts
+pulse tables orders            # the items themselves, decoded for humans
+```
+
+```
+orders — 2 item(s) shown
+  e9b4e51a-…  createdAt="…" · qty="2" · sku="A1" · status="processed"
+  parked-1    processedAt="…" · status="processed"
+```
+
+```bash
+pulse tables orders --delete e9b4e51a-…   # remove one item by key (--sk for sort-key tables)
+```
+
+```bash
+pulse peek order-events        # a queue's waiting messages — WITHOUT consuming them
+```
+
+```
+order-events — 1 message(s), oldest first (peeking doesn't consume)
+  473b4539  visible  {"id":"parked-1"}
+```
+
+Each message shows its state: `visible`, `hidden 4s` (delayed or mid-retry
+backoff), or `retried ×2`.
+
+### 4.6 Something's off? — `pulse doctor`
+
+The "why isn't this working?" command — every environment assumption
+checked, with the exact fix when one fails:
+
+```bash
+pulse doctor
+```
+
+```
+⚡ pulse doctor — checking your setup
+
+  ✓ pulse.yaml valid — 3 function(s), 3 trigger(s), 3 resource(s)
+  ✓ Python 3.12.9 (.venv/bin/python)
+  ✓ .venv present (pulse finds it automatically)
+  ✓ engine stopped · port 3000 is free
+  ✓ project state (.pulse/) healthy
+
+✓ everything looks good — `pulse start` away
+```
+
+Warnings (✱) don't block you — a Node/Python version outside the certified
+range still runs, with a note. Real problems (✗) come with their fix and a
+non-zero exit for CI.
+
+---
+
+## 5. Everyday things
+
+### 5.1 Seeing what exists — `pulse list` / `pulse validate`
 
 ```bash
 pulse list
 ```
 
-Shows every function, route, queue (with live depths), and table (with item
-counts), plus whether the engine is running. `pulse validate` checks
-`pulse.yaml` and reports **all** problems at once, with "did you mean…?"
-suggestions.
+Shows the project at a glance: engine status (`● running` / `○ stopped`),
+every function, every trigger, queues with live depths, tables with item
+counts. `pulse validate` checks `pulse.yaml` and reports **all** problems at
+once, with "did you mean…?" suggestions.
 
-### 3.15 Stopping, restarting, persistence
+### 5.2 Stopping, restarting, persistence
 
 ```bash
 pulse stop      # or Ctrl+C in the start terminal
 ```
 
-Everything survives a restart: table data, queued jobs (delivered on next
-start), logs, history — it all lives in the project's `.pulse/` folder.
-Delete `.pulse/` for a clean slate.
+```
+✓ stopped — data, queues, and history are safe in .pulse/
+```
 
-### 3.16 Environment variables — none required
+Everything survives a restart: table data, queued jobs (delivered on next
+start), logs, history. Delete the project's `.pulse/` folder for a clean
+slate.
+
+### 5.3 Environment variables — none required
 
 No AWS credentials, no `.env`. pulse injects everything AWS needs
 (`AWS_ENDPOINT_URL` pointing at the local mocks, dummy keys, region). Your
@@ -597,7 +823,7 @@ same names in your infra config and the identical code runs there.
 
 ---
 
-## 4. pulse.yaml reference
+## 6. pulse.yaml reference
 
 The complete demo config, annotated:
 
@@ -649,7 +875,7 @@ An app with no queues or tables simply omits `resources` entirely.
 
 ---
 
-## 5. Command cheat sheet
+## 7. Command cheat sheet
 
 | Command | Does |
 |---|---|
@@ -657,21 +883,22 @@ An app with no queues or tables simply omits `resources` entirely.
 | `pulse init` | New project — no arguments asks three quick questions |
 | `pulse init <name> [-t tpl] [--lang node\|python]` | Same, fully scripted (CI-safe) |
 | `pulse start [--port N]` / `pulse stop` | Local cloud on / off |
-| `pulse add function\|route\|queue\|table …` | Scaffold pieces, applied live |
+| `pulse add function\|route\|queue\|table …` | Scaffold pieces, applied live (bare = wizard) |
 | `pulse remove …` | The inverse — unwire pieces; code and data stay |
-| `pulse add table <name> --function <fn>` | Declare table + wire its name into a function's env |
 | `pulse invoke <fn> [-d json \| -e file]` | Run a function synchronously |
 | `pulse send <queue> <body> [--delay N]` | Queue a job |
-| `pulse logs <fn> [-n N] [-f]` | History / live logs |
-| `pulse events` / `pulse events replay <id>` | Trigger history / re-run a recorded event |
+| `pulse logs <fn> [-f] [--grep x] [--request id]` | Logs: tail, search, one request's story |
+| `pulse events` / `pulse events replay <id>` | Trigger history (`history` works too) / re-run an event |
 | `pulse monitor` | Live dashboard: logs, queues, Enter-to-replay |
 | `pulse tables [name]` / `pulse peek [queue]` | Look inside your data / waiting messages |
 | `pulse doctor` | Check your setup, with fixes |
 | `pulse list` / `pulse validate` | See everything / check config |
 | `-C <dir>` on any command | Act on a project from anywhere |
 
-Every command answers `--help` with examples. **Tab completion** (function,
-queue, and template names complete from *your* project):
+Every command answers `--help` with copy-paste examples, and every command
+that needs a name will **ask** on a terminal instead of erroring.
+**Tab completion** (function, queue, event, and template names complete from
+*your* project):
 
 ```bash
 echo 'source <(pulse completion zsh)' >> ~/.zshrc   # bash/fish/powershell work too
@@ -679,7 +906,9 @@ echo 'source <(pulse completion zsh)' >> ~/.zshrc   # bash/fish/powershell work 
 
 ---
 
-## 6. When something goes wrong
+## 8. When something goes wrong
+
+First stop: `pulse doctor` — it checks the usual suspects and prints fixes.
 
 | Symptom | Fix |
 |---|---|
@@ -689,20 +918,19 @@ echo 'source <(pulse completion zsh)' >> ~/.zshrc   # bash/fish/powershell work 
 | `✗ pulse.yaml changed but has problems` | Read the printed list — it names each problem; old config still serving |
 | `Task timed out after N seconds` | Handler exceeded its `timeout:` — raise it or fix the code |
 | Jobs redelivered while still processing | Raise the queue's `visibilityTimeout` above the worker's `timeout` |
-| Job never reaches the worker | Is the engine running? Delivery lives inside `pulse start`; check `pulse list` depths |
+| Job never reaches the worker | Is the engine running? Delivery lives inside `pulse start`; `pulse peek <queue>` shows what's waiting |
+| A function keeps failing on one input | `pulse logs --request <id>` for the full story, fix, then `pulse events replay <id>` |
 | AWS CLI errors mentioning "Query protocol" | Old CLI — install AWS CLI v2.13+ (`brew install awscli`) |
 | Want a clean slate | `pulse stop`, delete the project's `.pulse/` folder |
 
 ---
 
-## 7. Not built yet
+## 9. What pulse doesn't do yet
 
-- **Phase 5 (next):** event browser + replay, invocation history views, log
-  search, `pulse doctor`.
-- **Phase 6:** installers (Homebrew), cloud sync from a real AWS account,
-  project sharing, Windows.
+- **Phase 6 (next):** installers (Homebrew) and versioned releases, cloud
+  sync from a real AWS account, project sharing, Windows support.
 - **Backlog:** SNS, S3 + bucket events, DynamoDB streams/indexes/transactions,
-  EventBridge, Step Functions, Go/Java/.NET runtimes.
+  EventBridge, Step Functions, Go/Java/.NET runtimes, IAM enforcement.
 
 Anything unsupported fails with a clear message saying so — if pulse did it
 silently wrong instead, that's a bug: report it.

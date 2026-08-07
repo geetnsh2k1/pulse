@@ -17,8 +17,10 @@ func init() {
   pulse invoke worker -e events/sqs-message.json   # replay a saved event file
   cat event.json | pulse invoke worker -e -        # event from stdin`
 
-	logsCmd.Example = `  pulse logs worker -n 50      # recent lines (works with the engine stopped)
-  pulse logs worker --follow   # live stream`
+	logsCmd.Example = `  pulse logs worker -n 50              # recent lines (works with the engine stopped)
+  pulse logs worker --follow           # live stream
+  pulse logs worker --grep "order-17"  # search the last 1000 lines
+  pulse logs --request ab12cd34        # one request's whole story`
 
 	sendCmd.Example = `  pulse send order-events '{"id":"job-1"}'
   pulse send emails -e body.json           # body from a file

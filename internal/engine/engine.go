@@ -442,6 +442,7 @@ func (e *Engine) routes() http.Handler {
 	mux.HandleFunc("GET /api/events", e.handleEvents)
 	mux.HandleFunc("POST /api/replay", e.handleReplay)
 	mux.HandleFunc("GET /api/invocations", e.handleInvocations)
+	mux.HandleFunc("GET /api/request", e.handleRequest)
 	mux.HandleFunc("GET /api/logs", e.handleLogs)
 	mux.HandleFunc("GET /api/logs/stream", e.handleLogStream)
 	mux.HandleFunc("POST /api/shutdown", e.handleShutdown)
@@ -730,6 +731,15 @@ func (e *Engine) handleReplay(w http.ResponseWriter, r *http.Request) {
 		out.Logs = []logs.Line{}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (e *Engine) handleRequest(w http.ResponseWriter, r *http.Request) {
+	story, err := e.st.RequestByPrefix(r.URL.Query().Get("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, story)
 }
 
 func (e *Engine) handleInvocations(w http.ResponseWriter, r *http.Request) {
