@@ -321,6 +321,32 @@ Engine ready <1s · warm invoke overhead <50ms · golden flows green with unmodi
 
 ## 9. Progress log
 
+- **2026-08-08 — Go-public kit (Geetansh chose Apache-2.0).** LICENSE
+  (canonical Apache-2.0 text); README fully rewritten for a public
+  audience (wave wordmark, badges, thesis, three install methods incl.
+  `go install`, 2-minute quickstart, feature list with CI-enforced perf
+  numbers, template learning path, honest pulse/sam/LocalStack table,
+  doesn't-do-yet section); scripts/install.sh (OS/arch detect → latest
+  release tarball → /usr/local/bin, PULSE_INSTALL_DIR override);
+  docs/index.html landing page — all-monospace terminal aesthetic, amber
+  on cold near-black, hero is a looping typed animation of the real
+  golden demo (reduced-motion shows final state), ledger-row features,
+  versus table, honesty block; ready for GitHub Pages (Settings → Pages
+  → master /docs). Preview artifact published for review. Remaining
+  user-side switches: repo About/topics, enable Pages, flip visibility
+  public — then `brew install --cask geetnsh2k1/pulse/pulse` works for
+  the world.
+
+
+- **2026-08-08 — 🏷 v0.1.0 RELEASED.** First tag through the full pipeline:
+  ci green on GitHub runners (first CI run ever — including the perf bars
+  passing on shared hardware), release workflow built all five platforms,
+  published the GitHub Release with checksums, and goreleaserbot pushed
+  Casks/pulse.rb into geetnsh2k1/homebrew-pulse. The tap is live; installs
+  activate for the world the day the pulse repo flips public
+  (`brew install --cask geetnsh2k1/pulse/pulse`, or tap-once-then-`pulse`).
+
+
 - **2026-08-08 — P6 steps 1+3: perf bars enforced, releases wired
   (Geetansh skipped the README/WHY step).** internal/perf/perf_test.go
   gates all three PLAN §1 bars in CI — measured: engine ready **14ms**

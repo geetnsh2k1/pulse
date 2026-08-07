@@ -1,59 +1,150 @@
-# pulse
+<p align="center">
+  <br>
+  <code>&nbsp;─╮ ╭─╮ ╭──&nbsp;</code><br>
+  <code>&nbsp;&nbsp;╰─╯ ╰─╯&nbsp;&nbsp;&nbsp;</code><br>
+  <h1 align="center">pulse</h1>
+</p>
 
-Local AWS serverless development platform — run, trigger, and inspect Lambda-based
-apps entirely on your laptop, with high-fidelity service mocks and instant feedback.
-No Docker, no AWS account.
+<p align="center">
+  <b>The missing dev server for AWS serverless.</b><br>
+  Run your whole app — API, queues, workers, DynamoDB — natively on your laptop in milliseconds.<br>
+  No Docker. No AWS account. No deploys.
+</p>
 
-> Status: **pre-alpha**, built milestone by milestone. See [PLAN.md](PLAN.md) for the
-> full MVP plan and architecture.
+<p align="center">
+  <a href="https://github.com/geetnsh2k1/pulse/actions/workflows/ci.yml"><img src="https://github.com/geetnsh2k1/pulse/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/geetnsh2k1/pulse/releases/latest"><img src="https://img.shields.io/github/v/release/geetnsh2k1/pulse" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license"></a>
+</p>
 
-## Roadmap
+---
 
-One golden workflow — a CRUD app with background jobs, fully offline — built
-exceptionally well before anything else. Each phase ships something
-demonstrably useful.
+Every stack has a dev server — Rails has `rails server`, frontend has Vite.
+Serverless never got one: you either deploy-and-pray, or boot a
+multi-gigabyte cloud emulator in Docker. **pulse is that missing dev
+server.** Your code uses the vanilla AWS SDK and runs unchanged in
+production; pulse gives it a local cloud with a sub-second inner loop.
 
-| Phase | Story | Status |
-|---|---|---|
-| 0 | Foundations: CLI, config, store, engine skeleton, templates | ✅ |
-| 1 | Run Lambda — execute a function locally (invoke, logs, hot reload) | ✅ |
-| 2 | Build an API — a REST API works entirely offline | ✅ |
-| 3 | Process background jobs — SQS + worker Lambda | ✅ |
-| 4 | Persist data — DynamoDB | ✅ |
-| 5 | Inspect everything — logs, events, replay | ⏳ next |
-| 6 | Team ready — cloud sync, packaging, sharing | – |
+```
+⚡ pulse 0.1.0 — shop (us-east-1)
+  functions  createOrder · getOrder · worker
+  api        http://localhost:3000
+  routes     POST /orders → createOrder
+             GET /orders/{id} → getOrder
+  try        curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'
+  aws        http://127.0.0.1:62552 (sqs, dynamodb)
+ready in 99ms — code & pulse.yaml changes apply live · Ctrl+C to stop
+```
 
-Natural evolution after that: SNS, S3, EventBridge, Step Functions, more
-runtimes, desktop app.
+## Install
 
-## Quickstart
+**Homebrew** (macOS / Linux):
 
 ```bash
-make build                                  # → bin/pulse
-bin/pulse init shop --template api-and-worker --lang python   # deps auto-install
+brew install --cask geetnsh2k1/pulse/pulse
+```
+
+**Script** (macOS / Linux):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/geetnsh2k1/pulse/master/scripts/install.sh | sh
+```
+
+**Go:**
+
+```bash
+go install github.com/geetnsh2k1/pulse/cmd/pulse@latest
+```
+
+Or grab a binary from the [releases page](https://github.com/geetnsh2k1/pulse/releases)
+(Windows builds are there too — Windows support is beta).
+
+## Two minutes to a running app
+
+New to pulse? `pulse tour` teaches the whole loop hands-on in five minutes.
+Or go manual:
+
+```bash
+pulse init shop --template api-and-worker --lang python
 cd shop
-pulse start                                 # API + queues + tables + live apply
-curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'  # → 201 "pending"
-curl localhost:3000/orders/<id>             # → "processed", via queue + worker + table
-pulse add function notifier                 # scaffold more — applies live
+pulse start
 ```
 
-## Project config
-
-A pulse project is a folder with a `pulse.yaml` describing functions, triggers, and
-resources. Run `pulse init --list` to see starter templates. Engine state lives in
-`.pulse/` (SQLite + files) inside the project — gitignore it.
-
-## Development
+New terminal — paste the banner's `try` line:
 
 ```bash
-make build   # build the CLI
-make test    # go test -race ./...
-make lint    # go vet + gofmt check
+curl -X POST localhost:3000/orders -d '{"sku":"A1","qty":2}'
+# → 201 {"id":"…","status":"pending",…}
+
+curl localhost:3000/orders/<that-id>
+# → {"status":"processed",…}   ← a background worker updated it
 ```
 
-- Go module path is the placeholder `pulse` until the repo gets a remote home;
-  it will be renamed in one pass at git setup time.
-- Runtimes certified at MVP: Node.js 18/20/22, Python 3.9–3.12.
-- macOS/Linux are first-class; Windows is kept compiling in CI and becomes fully
-  supported at beta.
+That round trip was an API, a queue, a worker with retries, and a database —
+all local, all real SDK calls. `init` installed the dependencies; nothing to
+activate or configure.
+
+## What you get
+
+- **A sub-second inner loop.** Engine ready in ~100ms, warm invokes in
+  ~17ms — [enforced by CI](internal/perf/perf_test.go), not just claimed.
+  Edit a handler or `pulse.yaml` and it applies live; no restarts exist.
+- **The async loop, actually local.** Queues deliver to workers with
+  visibility timeouts, automatic retries, and dead-letter queues — the part
+  `sam local` can't do at all, in one console instead of a deploy cycle.
+- **Time travel.** Every trigger is recorded with its exact payload.
+  `pulse events replay <id>` re-fires yesterday's crashing request against
+  today's fix; `pulse logs --request <id>` tells one request's whole story.
+- **A live dashboard.** `pulse monitor` — functions with ✓/✗ counts, live
+  queue depths, streaming filtered logs, and Enter-to-replay history.
+- **A CLI that teaches.** Run any command bare and it asks instead of
+  erroring. Errors ship their fix. `pulse doctor` checks your setup.
+  Tab completion knows *your* functions and queues.
+- **Honesty by design.** pulse does one workflow completely — CRUD +
+  background jobs. Everything outside the subset fails loudly with a
+  message saying so, never silently wrong.
+
+## Templates are a learning path
+
+| Template | What it teaches |
+|---|---|
+| `hello` | One function behind `GET /hello` — the smallest start |
+| `todo-api` | Real CRUD on one table |
+| `webhook-relay` | Ack-fast webhooks with retries + a dead-letter queue |
+| `api-and-worker` ★ | Everything together: API + queue + worker + table |
+
+All templates come in Python and Node (`--lang`), use the plain AWS SDK, and
+run unchanged in real AWS.
+
+## How it compares
+
+|  | pulse | sam local | LocalStack |
+|---|---|---|---|
+| Cold start to working | **~100 ms** | container per invoke | 10–30 s container |
+| Code change | save → done | mostly re-invoke | redeploy / hot-reload config |
+| Queue → worker → DLQ locally | **yes, out of the box** | no | yes, via deploy cycle |
+| Requirements | one 20 MB binary | Docker | Docker (GB-scale image) |
+| Persistence across restarts | free, default | n/a | paid tier |
+
+Different tools for different jobs: LocalStack emulates ~100 AWS services
+and tests your IaC; SAM deploys. pulse owns the **inner loop** — the five
+hundred iterations before staging — and pairs with either at deploy time,
+since your code is vanilla SDK throughout.
+
+## Docs
+
+- **[The guide](docs/GUIDE.md)** — step-by-step with checkpoints: build,
+  inspect, reference, troubleshooting.
+- `pulse tour` — the interactive 5-minute version.
+- Every command answers `--help` with copy-paste examples.
+
+## What pulse doesn't do yet
+
+S3, SNS, EventBridge, Step Functions, DynamoDB indexes/transactions, Go/Java
+runtimes — see the [roadmap](docs/GUIDE.md#9-what-pulse-doesnt-do-yet).
+Anything unsupported fails with a clear message saying so. If pulse ever
+does something *silently wrong* instead, that's a bug: please open an issue.
+
+## License
+
+[Apache-2.0](LICENSE) © Geetansh Garg

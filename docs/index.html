@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>pulse — the missing dev server for AWS serverless</title>
+<meta name="description" content="Run your whole serverless app — API, queues, workers, DynamoDB — natively on your laptop in milliseconds. No Docker, no AWS account.">
+<style>
+  :root {
+    --bg: #0D0E12;
+    --panel: #16181F;
+    --edge: #262935;
+    --text: #E8E6E0;
+    --dim: #8B8FA3;
+    --amber: #FFAB33;
+    --amber-soft: #FFC46B;
+    --green: #7ADB8F;
+    --red: #FF6B6B;
+    --cyan: #6FD7E0;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    font-family: var(--mono);
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  ::selection { background: var(--amber); color: #131313; }
+  a { color: var(--amber); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover, a:focus-visible { border-bottom-color: var(--amber); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+
+  .wrap { max-width: 76ch; margin: 0 auto; padding: 0 20px; }
+
+  /* ---- hero ---- */
+  header { padding: 72px 0 0; }
+  .wave {
+    color: var(--amber);
+    font-size: 22px;
+    line-height: 1.15;
+    white-space: pre;
+    animation: beat 2.4s ease-in-out infinite;
+  }
+  @keyframes beat { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
+  @media (prefers-reduced-motion: reduce) { .wave { animation: none } }
+  h1 {
+    font-size: clamp(40px, 8vw, 64px);
+    letter-spacing: -0.03em;
+    margin: 10px 0 14px;
+    line-height: 1;
+    text-wrap: balance;
+  }
+  .thesis {
+    font-size: clamp(17px, 2.6vw, 21px);
+    max-width: 62ch;
+    margin: 0 0 8px;
+    text-wrap: balance;
+  }
+  .thesis b { color: var(--amber-soft); font-weight: 600; }
+  .sub { color: var(--dim); margin: 0 0 34px; }
+
+  .install {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    padding: 14px 16px;
+    margin-bottom: 46px;
+  }
+  .install code { color: var(--text); overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .install .p { color: var(--amber); user-select: none; }
+  .copy {
+    margin-left: auto;
+    background: none; border: 1px solid var(--edge);
+    color: var(--dim); font: inherit; font-size: 12px;
+    padding: 4px 12px; cursor: pointer;
+  }
+  .copy:hover { color: var(--amber); border-color: var(--amber); }
+
+  /* ---- terminal ---- */
+  .term {
+    background: #101218;
+    border: 1px solid var(--edge);
+    box-shadow: 0 24px 70px -30px rgba(255, 171, 51, .14);
+  }
+  .term-bar {
+    display: flex; gap: 6px; align-items: center;
+    padding: 10px 14px; border-bottom: 1px solid var(--edge);
+    color: var(--dim); font-size: 12px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--edge); }
+  .term-body {
+    padding: 18px 18px 22px;
+    min-height: 24.5em;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13.5px;
+    line-height: 1.75;
+  }
+  .c-p { color: var(--amber); }           /* prompt/typed */
+  .c-d { color: var(--dim); }
+  .c-g { color: var(--green); }
+  .c-r { color: var(--red); }
+  .c-c { color: var(--cyan); }
+  .c-a { color: var(--amber); }
+  .cursor { display: inline-block; width: .6em; height: 1.1em; background: var(--amber); vertical-align: -0.15em; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0 } }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none } }
+
+  /* ---- sections ---- */
+  section { padding: 58px 0 6px; }
+  .lbl { color: var(--dim); margin: 0 0 26px; }
+  .lbl::before { content: "# "; color: var(--amber); }
+  .rule { border: 0; border-top: 1px solid var(--edge); margin: 58px 0 0; }
+
+  .row {
+    display: grid; grid-template-columns: 15ch 1fr; gap: 8px 26px;
+    padding: 17px 0; border-top: 1px solid var(--edge);
+  }
+  .row:last-of-type { border-bottom: 1px solid var(--edge); }
+  .row dt { color: var(--amber-soft); margin: 0; }
+  .row dd { margin: 0; color: var(--text); max-width: 58ch; }
+  .row dd .n { color: var(--amber); font-variant-numeric: tabular-nums; }
+  .row dd small { color: var(--dim); display: block; margin-top: 3px; font-size: 13px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; gap: 2px } }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-top: 1px solid var(--edge); vertical-align: top; }
+  thead th { color: var(--dim); font-weight: 400; border-top: 0; }
+  td:first-child { color: var(--dim); }
+  .yes { color: var(--green); }
+  .meh { color: var(--dim); }
+  .hot { color: var(--amber); }
+
+  .methods { display: grid; gap: 14px; }
+  .method { background: var(--panel); border: 1px solid var(--edge); padding: 13px 16px; overflow-x: auto; }
+  .method b { color: var(--dim); font-weight: 400; display: block; font-size: 12px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .12em; }
+  .method code { white-space: nowrap; }
+
+  .honest {
+    border-left: 3px solid var(--amber);
+    padding: 4px 0 4px 22px;
+    max-width: 60ch;
+  }
+  .honest p { margin: 8px 0; }
+
+  footer {
+    margin-top: 70px; padding: 30px 0 60px;
+    border-top: 1px solid var(--edge);
+    color: var(--dim);
+    display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline;
+  }
+  footer .p { color: var(--amber); }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="wave"> ─╮ ╭─╮ ╭──
+  ╰─╯ ╰─╯</div>
+  <h1>pulse</h1>
+  <p class="thesis">Every stack has a dev server. <b>Serverless never got one.</b>
+  pulse runs your whole AWS app — API, queues, workers, DynamoDB — natively on
+  your laptop, ready in milliseconds.</p>
+  <p class="sub">No Docker. No AWS account. Vanilla SDK code that runs unchanged in production.</p>
+
+  <div class="install">
+    <span class="p">$</span>
+    <code id="cmd">brew install --cask geetnsh2k1/pulse/pulse</code>
+    <button class="copy" id="copyBtn" aria-label="Copy install command">copy</button>
+  </div>
+
+  <div class="term" aria-label="pulse demo terminal">
+    <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; the whole loop — live</div>
+    <div class="term-body" id="term"><span class="cursor"></span></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <p class="lbl">why</p>
+    <dl>
+      <div class="row">
+        <dt>the inner loop</dt>
+        <dd>Ready in <span class="n">~100&#8202;ms</span>, warm invokes in <span class="n">~17&#8202;ms</span> — enforced by CI, not just claimed. Code and config apply live; restarts don't exist.
+        <small>emulators boot containers; pulse runs native processes speaking AWS's real Lambda Runtime API</small></dd>
+      </div>
+      <div class="row">
+        <dt>the async half</dt>
+        <dd>Queues deliver to workers with retries, visibility timeouts, and dead-letter queues — locally, in one console.
+        <small>the part deploy-and-pray never shows you and <code>sam local</code> can't run at all</small></dd>
+      </div>
+      <div class="row">
+        <dt>time travel</dt>
+        <dd>Every trigger is recorded with its exact payload. Replay yesterday's crashing request against today's fix. Ask any request for its whole story.
+        <small>pulse events replay &lt;id&gt; · pulse logs --request &lt;id&gt; · pulse monitor</small></dd>
+      </div>
+      <div class="row">
+        <dt>a CLI that teaches</dt>
+        <dd>Run any command bare and it asks instead of erroring. Errors ship their fix. <code>pulse tour</code> teaches the whole model in five minutes, hands-on.
+        <small>tab completion knows your functions and queues, not just the flags</small></dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <p class="lbl">versus</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th></th><th>pulse</th><th>sam local</th><th>LocalStack</th></tr></thead>
+      <tbody>
+        <tr><td>cold start to working</td><td class="hot">~100 ms</td><td class="meh">container / invoke</td><td class="meh">10–30 s container</td></tr>
+        <tr><td>code change</td><td class="hot">save → done</td><td class="meh">re-invoke</td><td class="meh">redeploy</td></tr>
+        <tr><td>queue → worker → DLQ</td><td class="yes">out of the box</td><td class="meh">—</td><td class="meh">via deploy cycle</td></tr>
+        <tr><td>requirements</td><td class="hot">one 20 MB binary</td><td class="meh">Docker</td><td class="meh">Docker, GB image</td></tr>
+        <tr><td>replay &amp; request stories</td><td class="yes">built in</td><td class="meh">—</td><td class="meh">—</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="color:var(--dim); max-width:62ch">Different jobs: LocalStack emulates ~100 services and tests your IaC; SAM deploys.
+    pulse owns the five hundred iterations before staging — and pairs with either at deploy time.</p>
+  </section>
+
+  <section>
+    <p class="lbl">install</p>
+    <div class="methods">
+      <div class="method"><b>homebrew · macos &amp; linux</b><code>brew install --cask geetnsh2k1/pulse/pulse</code></div>
+      <div class="method"><b>script</b><code>curl -fsSL https://raw.githubusercontent.com/geetnsh2k1/pulse/master/scripts/install.sh | sh</code></div>
+      <div class="method"><b>go</b><code>go install github.com/geetnsh2k1/pulse/cmd/pulse@latest</code></div>
+    </div>
+    <p style="color:var(--dim)">then: <code style="color:var(--amber)">pulse tour</code> — five minutes, hands-on, nothing simulated.</p>
+  </section>
+
+  <section>
+    <p class="lbl">honesty</p>
+    <div class="honest">
+      <p>pulse does one workflow <em>completely</em>: CRUD APIs with background
+      jobs — HTTP, SQS, DynamoDB, Lambda.</p>
+      <p>Everything outside that subset fails loudly, with a message saying
+      exactly what isn't supported. Never silently wrong. S3, SNS,
+      EventBridge, Step Functions: on the roadmap, not pretended.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <span><span class="p">$</span> pulse tour</span>
+  <a href="https://github.com/geetnsh2k1/pulse">github</a>
+  <a href="https://github.com/geetnsh2k1/pulse/blob/master/docs/GUIDE.md">the guide</a>
+  <a href="https://github.com/geetnsh2k1/pulse/releases">releases</a>
+  <span>apache-2.0 © geetansh garg</span>
+</footer>
+
+<script>
+(function () {
+  var btn = document.getElementById("copyBtn");
+  btn.addEventListener("click", function () {
+    var text = document.getElementById("cmd").textContent;
+    function done() { btn.textContent = "copied"; setTimeout(function () { btn.textContent = "copy"; }, 1600); }
+    if (navigator.clipboard) { navigator.clipboard.writeText(text).then(done); }
+    else {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  });
+
+  // The hero terminal plays the real golden demo, verbatim outputs.
+  var script = [
+    { t: "type", text: "pulse init shop --template api-and-worker --lang python" },
+    { t: "out", html: '<span class="c-g">✓</span> created project <b>shop</b> <span class="c-d">from template api-and-worker (python)</span>\n  <span class="c-g">✓</span> <span class="c-d">installing python dependencies — done (6.6s)</span>' },
+    { t: "type", text: "pulse start" },
+    { t: "out", html: '<span class="c-a">⚡ pulse</span> <span class="c-d">0.1.0 —</span> <b>shop</b>\n  <span class="c-d">api</span>        http://localhost:3000\n  <span class="c-d">routes</span>     <b>POST</b> /orders <span class="c-d">→</span> <span class="c-c">createOrder</span>\n  <span class="c-d">try</span>        <span class="c-a">curl -X POST localhost:3000/orders -d \'{"sku":"A1","qty":2}\'</span>\n<span class="c-g">ready in 99ms</span> <span class="c-d">— edits apply live</span>' },
+    { t: "type", text: "curl -X POST localhost:3000/orders -d '{\"sku\":\"A1\",\"qty\":2}'" },
+    { t: "out", html: '<span class="c-d">201</span> {"id":"e9b4…","status":"pending"}\n  <span class="c-c">⚙ sqs order-events → worker · ok</span>\n<span class="c-a">🎉 first background job processed — your async loop works end to end</span>' },
+    { t: "type", text: "curl localhost:3000/orders/e9b4…" },
+    { t: "out", html: '{"id":"e9b4…","status":<span class="c-g">"processed"</span>}   <span class="c-d">← the worker got there first</span>' },
+    { t: "out", html: '<span class="c-d">— that was an API, a queue, a worker, and a database. all local. —</span>' }
+  ];
+
+  var term = document.getElementById("term");
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function render(upTo, partial) {
+    var html = "";
+    for (var i = 0; i < upTo; i++) {
+      var s = script[i];
+      html += s.t === "type"
+        ? '<span class="c-p">$ ' + esc(s.text) + "</span>\n"
+        : s.html + "\n\n";
+    }
+    if (partial !== undefined) html += '<span class="c-p">$ ' + esc(partial) + "</span>";
+    term.innerHTML = html + '<span class="cursor"></span>';
+  }
+  function esc(x) { return x.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+  if (reduced) { render(script.length); return; }
+
+  var idx = 0;
+  function step() {
+    if (idx >= script.length) { setTimeout(function () { idx = 0; step(); }, 9000); return; }
+    var s = script[idx];
+    if (s.t === "type") {
+      var pos = 0;
+      (function typeChar() {
+        pos++;
+        render(idx, s.text.slice(0, pos));
+        if (pos < s.text.length) setTimeout(typeChar, 26 + Math.random() * 34);
+        else { idx++; setTimeout(step, 340); }
+      })();
+    } else {
+      idx++;
+      render(idx);
+      setTimeout(step, idx === script.length ? 60 : 950);
+    }
+  }
+  step();
+})();
+</script>
+</body>
+</html>
