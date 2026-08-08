@@ -789,3 +789,104 @@ from the layman audit.
 **Total estimate: ~3–4 focused days.** UX-protection rule throughout:
 Windows is not advertised anywhere until W3 passes — the release zip
 exists for the adventurous, labeled beta, and that's all.
+
+---
+
+## 11. Post-launch product plan — "make it real" (decided 2026-08-08)
+
+Thesis: the product is feature-complete for an MVP. Success now depends on
+(a) surviving first contact with other people's machines, (b) meeting
+existing projects where they are, and (c) letting real demand pick the
+next service. Every phase below carries a **Website** line — the site
+moves in lockstep with the product, always.
+
+Success instruments (all already wired or listed here): GitHub release
+`download_count` + stars · PostHog funnel by UTM (`copy_install` per
+method/location) · update-check hits on getpulse.run/version.json as a
+rough active-user proxy.
+
+### L0 — Launch-week kit (with Claude, ~1–2 days)
+- **vhs demo GIF**: charmbracelet/vhs tape of the golden demo
+  (init → start → curl → 🎉 → replay), 15 s, for README + site + socials.
+- **Launch posts**: Show HN, Product Hunt listing, r/aws, r/serverless —
+  all opening with The Sentence, all links UTM-tagged (`?utm_source=hn`…).
+- **Update notifier (ship BEFORE launch)**: CLI checks
+  `https://getpulse.run/version.json` max once/24 h (cache in config dir),
+  compares semver, prints one dim line when newer:
+  `pulse 0.2.0 available — brew upgrade pulse` ·
+  opt-out `PULSE_NO_UPDATE_CHECK=1` · documented in README (privacy: a
+  plain GET for a static file, no payload, no identifiers).
+  **Website:** serve `public/version.json` (`{"latest":"0.1.0"}`);
+  updating it becomes a release-checklist step (automate via CI later).
+- **Repo flip to public** + About fields, issue templates
+  (bug/feature/runtime-report), CONTRIBUTING stub, Discussions on,
+  3–5 seeded "good first issue"s.
+- Testimonials on site: real quotes in or `SHOW_TESTIMONIALS=false`.
+
+### L1 — First-run hardening (before/during launch, ~2–3 days)
+Reality check: pulse is proven on ONE machine (Node 23 + Python 3.13 —
+both outside the certified matrix). Launch traffic brings pyenv, nvm,
+asdf, volta, brew-python, Intel Macs, real Linux.
+- Runtime matrix: Python 3.9→3.13 (pyenv) × Node 18/20/22/23 (nvm) —
+  init/start/invoke/full golden demo per combo; fix resolution bugs.
+- Linux for real: run the acceptance demo in ubuntu + debian containers
+  with the released linux binaries (both arches).
+- Fresh-machine drill: brand-new user account, only brew installed —
+  time-to-first-🎉; every failure becomes a `pulse doctor` check with the
+  exact fix in the error.
+- WSL2 smoke test → then document "Windows today: WSL2" (native port
+  stays parked in §10).
+- **Website:** FAQ + features gain the honest supported-runtimes matrix;
+  "Windows via WSL2" lands in FAQ.
+
+### L2 — `pulse import` (the adoption unlock, ~1–2 weeks, right after launch)
+The predictable HN comment: "cool, but my app already exists." Kill it.
+- `pulse import` reads SAM `template.yaml` → generates `pulse.yaml`:
+  Serverless::Function (runtime/handler/env) · Api/HttpApi events → http
+  triggers · SQS event sources → queues+workers · SimpleTable/DynamoDB
+  tables → tables. Everything unmappable → a LOUD, complete warnings list
+  (the honesty rule applied to onboarding).
+- Wizard mode when run bare; `--dry-run` prints the plan.
+- serverless.yml + basic CDK-synth output: follow-up, demand-permitting.
+- **Website:** quickstart splits "new project | existing SAM app"; hero
+  gains the claim only once true; new FAQ entry; README quickstart twin.
+
+### L3 — Service surface, demand-driven (each ~3 days–1.5 weeks)
+Let launch-week issues vote on order; default order:
+1. **S3 subset** — buckets in pulse.yaml, Put/Get/Delete/List +
+   presigned URLs, disk-backed under `.pulse/data/s3`, `pulse buckets`
+   browser, loud errors for versioning/ACL exotica.
+2. **EventBridge schedules** — `schedule: rate(1m)|cron(…)` triggers,
+   poller invokes on time, monitor shows next-fire.
+3. **SNS basics** — topics fanning out to queues/functions.
+- **Website ritual per service:** the item MOVES from "On the roadmap" →
+  "Works today" in the support matrix; features/FAQ/compare + both
+  /vs pages updated; changelog entry; announcement tweet.
+
+### L4 — Docs on getpulse.run (background, compounding SEO)
+- `/docs` section rendering the GUIDE (per-chapter pages), then
+  per-feature pages (hot reload, replay, queues, tables, monitor) — each
+  ranks independently; "Why pulse exists" post as first blog entry.
+- Homepage LearnMore links flip from GitHub GUIDE anchors → on-site docs.
+
+### Explicit non-goals right now
+Windows native (§10, parked) · desktop app · cloud sync · further
+homepage polish (11 audit rounds is enough) · any telemetry beyond the
+version check.
+
+### §11 addendum (2026-08-08) — audit-review filter + product-pixels assets
+- **Audit provenance rule**: before acting on any external site review,
+  verify it references OUR pulse (local AWS dev server) — reviews have
+  repeatedly arrived stale (pre-redesign) or for the WRONG product
+  (an AI prompt-tool also named Pulse: "prompt library", "works with
+  GPT-5/Cursor", "pricing" are the tells). Reviewers get a fresh
+  incognito link + the one-line product description, or the review is
+  discarded.
+- **L0 add — real product pixels** (from the one transferable grain):
+  vhs renders BOTH launch assets from the real binary: (1) the golden
+  demo GIF (init → start → live request → 🎉 → events) for README/socials,
+  and (2) a real `pulse monitor` screenshot PNG. **Website:** the inspect
+  section's "live monitor" tab swaps its stylized HTML frame for the real
+  screenshot — actual pixels of the actual TUI.
+- Outcome-first copy pass rides along with L0 post-writing (site cells
+  already lead with outcomes post-density round; verify, don't rebuild).

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pulse-website",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/geetansh2k1/Desktop/pulse-website", "run", "dev"],
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}

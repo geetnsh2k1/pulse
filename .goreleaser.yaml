@@ -46,7 +46,7 @@ homebrew_casks:
       name: homebrew-pulse
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/geetnsh2k1/pulse
-    description: "The missing dev server for AWS serverless — run your whole app locally in milliseconds"
+    description: "The dev server AWS Lambda never had — run your whole serverless app locally in milliseconds"
     # Unsigned binary: strip the quarantine bit so Gatekeeper lets it run.
     hooks:
       post:

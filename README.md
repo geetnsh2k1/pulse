@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <b>The missing dev server for AWS serverless.</b><br>
+  <b>The dev server AWS Lambda never had.</b><br>
   Run your whole app — API, queues, workers, DynamoDB — natively on your laptop in milliseconds.<br>
   No Docker. No AWS account. No deploys.
 </p>
@@ -15,6 +15,10 @@
   <a href="https://github.com/geetnsh2k1/pulse/actions/workflows/ci.yml"><img src="https://github.com/geetnsh2k1/pulse/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
   <a href="https://github.com/geetnsh2k1/pulse/releases/latest"><img src="https://img.shields.io/github/v/release/geetnsh2k1/pulse" alt="release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="pulse demo — init, start, a live request through the queue to the worker, and the event history" width="820">
 </p>
 
 ---
