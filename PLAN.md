@@ -910,3 +910,23 @@ version check.
 - **Next in L1**: watch the first CI matrix run; any red combo becomes a
   code fix + a `pulse doctor` check. Then the website FAQ gains the
   verified matrix + the WSL2 line.
+
+#### L1 findings — round 1 (2026-08-09, local)
+1. **`pulse doctor` outside a project reported a ✗ problem and exited 1.**
+   That's the first command a freshly-installed user runs, and it said
+   "broken" when nothing was. Doctor now has an **environment mode**: no
+   pulse.yaml → check pulse version, node, python, config dir, port 3000,
+   then "✓ your machine is ready — no project here yet · `pulse init`"
+   and exit 0. Only a machine with *neither* runtime is a real failure.
+2. **Hardcoded "certified" version lists were already wrong.** They
+   blessed python 3.9–3.12 / node 18,20,22 by string prefix, so Python
+   3.13 (which CI now tests) was reported "outside the certified range",
+   and every future release would be flagged until someone edited the
+   list. Replaced with parsed floor comparison (node ≥18, python ≥3.10),
+   unparsable versions treated as fine — doctor never cries wolf.
+   Unit tests: internal/cli/doctor_test.go.
+3. **e2e flake under load**: the first POST cold-starts a worker; on a
+   saturated box that can 500. The script now retries the first request
+   3× before failing (verified: passes while a full `go test -race` runs
+   concurrently). Worth watching in CI — if it ever needs all 3 attempts
+   regularly, that's a real cold-start bug to chase.

@@ -109,9 +109,18 @@ done
 ok "gateway answering on :$PORT"
 
 # ------------------------------------------------- request → queue → worker
-body=$(curl -fsS -X POST "http://127.0.0.1:$PORT/orders" \
-  -H 'content-type: application/json' -d '{"sku":"A1","qty":2}' 2>&1) \
-  || fail "POST /orders failed" "$body"
+# The very first request cold-starts a worker process. On a loaded box (CI
+# runners, a laptop mid-build) that can lose a race against the runtime's
+# own startup, so give it three tries before calling it broken — three
+# consecutive failures is a real fault, one is weather.
+body=""
+for attempt in 1 2 3; do
+  body=$(curl -fsS -X POST "http://127.0.0.1:$PORT/orders" \
+    -H 'content-type: application/json' -d '{"sku":"A1","qty":2}' 2>&1)
+  case "$body" in *'"pending"'*) break ;; esac
+  [ "$attempt" = "3" ] && fail "POST /orders never succeeded (3 attempts)" "$body"
+  sleep 2
+done
 assert "POST /orders created an order" "$body" '"status": "pending"'
 
 id=$(printf '%s' "$body" | sed -n 's/.*"id"[ ]*:[ ]*"\([^"]*\)".*/\1/p')

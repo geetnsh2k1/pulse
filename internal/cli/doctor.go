@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ import (
 	"github.com/geetnsh2k1/pulse/internal/engine"
 	"github.com/geetnsh2k1/pulse/internal/store"
 	"github.com/geetnsh2k1/pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/version"
 )
 
 // pulse doctor — the "why isn't this working?" command: every environment
@@ -44,10 +46,9 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 
 	cfg, err := loadProject()
 	if err != nil {
-		checks = append(checks, check{ok: false, line: "pulse.yaml", fix: err.Error()})
-		printChecks(checks)
-		fmt.Println()
-		return fmt.Errorf("1 problem needs fixing — the other checks need a valid pulse.yaml")
+		// No project here is not a fault — it's the normal state right after
+		// installing. Check the machine instead and point at the next step.
+		return runEnvDoctor()
 	}
 	resources := len(cfg.Resources.Tables) + len(cfg.Resources.Queues)
 	checks = append(checks, check{ok: true,
@@ -105,6 +106,84 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+// runEnvDoctor answers "is this machine ready for pulse?" — everything that
+// can be known without a project. Used when there's no pulse.yaml in sight,
+// which is exactly where a freshly-installed user stands.
+func runEnvDoctor() error {
+	var checks []check
+
+	checks = append(checks, check{ok: true, line: "pulse " + version.Version})
+
+	node, nodeOK := runtimeCheck("node", "node", "--version")
+	checks = append(checks, node)
+	py, pyOK := runtimeCheck("python", "python3", "--version")
+	checks = append(checks, py)
+
+	// The update check caches here; if it isn't writable, say so quietly.
+	if dir, err := os.UserConfigDir(); err != nil {
+		checks = append(checks, check{ok: false, warn: true, line: "no user config dir", fix: err.Error()})
+	} else if err := os.MkdirAll(filepath.Join(dir, "pulse"), 0o755); err != nil {
+		checks = append(checks, check{ok: false, warn: true,
+			line: "config dir not writable", fix: err.Error()})
+	} else {
+		checks = append(checks, check{ok: true, line: "config dir writable"})
+	}
+
+	if l, err := net.Listen("tcp", "127.0.0.1:3000"); err != nil {
+		checks = append(checks, check{ok: false, warn: true,
+			line: "port 3000 is taken by another process",
+			fix:  "not a problem — new projects can use `pulse start --port 3210`"})
+	} else {
+		l.Close()
+		checks = append(checks, check{ok: true, line: "port 3000 is free (the default api port)"})
+	}
+
+	printChecks(checks)
+	fmt.Println()
+
+	// A machine with neither runtime can't run functions at all; anything
+	// else is ready to go.
+	if !nodeOK && !pyOK {
+		return fmt.Errorf("no supported runtime found — install Node 18+ or Python 3.10+, then run `pulse doctor` again")
+	}
+	fmt.Println(ui.OK("✓ your machine is ready") +
+		ui.Dim(" — no pulse project in this directory yet"))
+	fmt.Println(ui.Hint("start one: `pulse init <name>` · or take the tour: `pulse tour`"))
+	return nil
+}
+
+// runtimeCheck reports whether a language toolchain is present and new
+// enough. Missing is a warning here (you may only use the other one).
+func runtimeCheck(family, bin, arg string) (check, bool) {
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return check{ok: false, warn: true,
+			line: family + " not found",
+			fix:  "install it if you plan to write " + family + " functions",
+		}, false
+	}
+	v, err := toolVersion(path, arg)
+	if err != nil {
+		return check{ok: false, warn: true, line: family + " found but not runnable", fix: err.Error()}, false
+	}
+	if !runtimeSupported(family, v) {
+		return check{ok: false, warn: true,
+			line: fmt.Sprintf("%s — below the supported floor (%s)", v, supportedFloor[family]),
+			fix:  "upgrade to " + supportedFloor[family] + " for the tested behavior",
+		}, false
+	}
+	return check{ok: true, line: labelled(family, v)}, true
+}
+
+// `node --version` answers "v23.7.0" with no clue what it is; `python3
+// --version` says "Python 3.13.2". Name the tool either way.
+func labelled(family, v string) string {
+	if strings.HasPrefix(strings.ToLower(v), family) {
+		return v
+	}
+	return family + " " + v
+}
+
 func printChecks(checks []check) {
 	for _, c := range checks {
 		glyph := ui.OK("✓")
@@ -121,10 +200,52 @@ func printChecks(checks []check) {
 	}
 }
 
-// certified runtime ranges (matching README/PLAN).
-var certified = map[string][]string{
-	"node":   {"v18.", "v20.", "v22."},
-	"python": {"3.9.", "3.10.", "3.11.", "3.12."},
+// Supported floors, not a fixed list of blessed versions: a hardcoded list
+// marks every future release "uncertified" until someone edits it (it was
+// flagging Python 3.13, which CI tests). Matches README + the CI matrix.
+var supportedFloor = map[string]string{
+	"node":   "Node 18+",
+	"python": "Python 3.10+",
+}
+
+// runtimeSupported parses the first x.y in a version string and compares it
+// against the floor. Unparsable output is treated as supported — doctor
+// should never cry wolf over an unusual `--version` format.
+func runtimeSupported(family, version string) bool {
+	maj, min, ok := parseMajorMinor(version)
+	if !ok {
+		return true
+	}
+	switch family {
+	case "node":
+		return maj >= 18
+	case "python":
+		return maj > 3 || (maj == 3 && min >= 10)
+	}
+	return true
+}
+
+func parseMajorMinor(s string) (maj, min int, ok bool) {
+	digits := func(r rune) bool { return r >= '0' && r <= '9' }
+	i := strings.IndexFunc(s, digits)
+	if i < 0 {
+		return 0, 0, false
+	}
+	rest := s[i:]
+	end := strings.IndexFunc(rest, func(r rune) bool { return !digits(r) && r != '.' })
+	if end > 0 {
+		rest = rest[:end]
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	min, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return maj, min, true
 }
 
 func runtimeChecks(cfg *config.Config) []check {
@@ -141,10 +262,11 @@ func runtimeChecks(cfg *config.Config) []check {
 	if families["node"] {
 		if v, err := toolVersion("node", "--version"); err != nil {
 			out = append(out, check{ok: false, line: "node not found (project uses a Node runtime)",
-				fix: "install Node 18/20/22 — https://nodejs.org"})
-		} else if !versionCertified("node", v) {
-			out = append(out, check{ok: false, warn: true, line: fmt.Sprintf("node %s found — outside the certified 18/20/22 range", v),
-				fix: "works, but behavior may differ from real Lambda"})
+				fix: "install Node 18+ — https://nodejs.org"})
+		} else if !runtimeSupported("node", v) {
+			out = append(out, check{ok: false, warn: true,
+				line: fmt.Sprintf("node %s — below the supported floor (%s)", v, supportedFloor["node"]),
+				fix:  "upgrade for the behavior pulse tests in CI"})
 		} else {
 			out = append(out, check{ok: true, line: "node " + v})
 		}
@@ -154,10 +276,11 @@ func runtimeChecks(cfg *config.Config) []check {
 		switch {
 		case py == "":
 			out = append(out, check{ok: false, line: "python not found (project uses a Python runtime)",
-				fix: "install Python 3.9–3.12"})
-		case !versionCertified("python", v):
-			out = append(out, check{ok: false, warn: true, line: fmt.Sprintf("%s (%s) — outside the certified 3.9–3.12 range", v, py),
-				fix: "works, but behavior may differ from real Lambda"})
+				fix: "install Python 3.10+"})
+		case !runtimeSupported("python", v):
+			out = append(out, check{ok: false, warn: true,
+				line: fmt.Sprintf("%s (%s) — below the supported floor (%s)", v, py, supportedFloor["python"]),
+				fix:  "upgrade for the behavior pulse tests in CI"})
 		default:
 			out = append(out, check{ok: true, line: fmt.Sprintf("%s (%s)", v, py)})
 		}
@@ -210,13 +333,4 @@ func toolVersion(bin string, arg string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-func versionCertified(family, version string) bool {
-	for _, prefix := range certified[family] {
-		if strings.Contains(version, prefix) {
-			return true
-		}
-	}
-	return false
 }
