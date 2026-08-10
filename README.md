@@ -63,6 +63,11 @@ go install github.com/geetnsh2k1/pulse/cmd/pulse@latest
 Or grab a binary from the [releases page](https://github.com/geetnsh2k1/pulse/releases)
 (Windows builds are there too — Windows support is beta).
 
+> **Update check:** at most once a day, pulse fetches a static
+> `version.json` from getpulse.run to tell you when a newer release
+> exists — a plain GET, no payload, no identifiers, silent offline.
+> Opt out any time with `PULSE_NO_UPDATE_CHECK=1`.
+
 ## Two minutes to a running app
 
 New to pulse? `pulse tour` teaches the whole loop hands-on in five minutes.

@@ -19,6 +19,7 @@ import (
 	"github.com/geetnsh2k1/pulse/internal/gateway"
 	"github.com/geetnsh2k1/pulse/internal/store"
 	"github.com/geetnsh2k1/pulse/internal/ui"
+	"github.com/geetnsh2k1/pulse/internal/update"
 	"github.com/geetnsh2k1/pulse/internal/version"
 )
 
@@ -92,6 +93,16 @@ func runStart(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  %s    %s\n", ui.Dim("control"), ui.Dim(eng.ControlAddr()))
 	fmt.Printf("%s %s\n", ui.OK("ready in "+eng.ReadyIn().Round(time.Millisecond).String()),
 		ui.Dim("— code & pulse.yaml changes apply live · Ctrl+C to stop"))
+
+	// Once-a-day update hint, printed into the console stream whenever the
+	// answer arrives — never delays startup, never complains offline.
+	go func() {
+		if latest, ok := <-update.Check(version.Version); ok {
+			fmt.Println(ui.Hint(fmt.Sprintf(
+				"pulse %s is available (you have %s) — `brew upgrade pulse` · PULSE_NO_UPDATE_CHECK=1 to silence",
+				latest, version.Version)))
+		}
+	}()
 
 	// Stream every function's output into this console: the terminal
 	// running `pulse start` tells the whole story.
