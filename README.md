@@ -68,6 +68,11 @@ Or grab a binary from the [releases page](https://github.com/geetnsh2k1/pulse/re
 > exists — a plain GET, no payload, no identifiers, silent offline.
 > Opt out any time with `PULSE_NO_UPDATE_CHECK=1`.
 
+**Supported runtimes:** Python 3.10+ and Node 18+, on macOS and Linux
+(Windows via WSL2). Every push runs the full golden path — init → start →
+request → queue → worker → replay → deploy-ready — across that matrix in
+CI (`scripts/e2e.sh`), so the support claim is tested, not asserted.
+
 ## Two minutes to a running app
 
 New to pulse? `pulse tour` teaches the whole loop hands-on in five minutes.

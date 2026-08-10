@@ -890,3 +890,23 @@ version check.
   screenshot — actual pixels of the actual TUI.
 - Outcome-first copy pass rides along with L0 post-writing (site cells
   already lead with outcomes post-density round; verify, don't rebuild).
+
+### §11 L1 progress (2026-08-09)
+- **DONE — `scripts/e2e.sh`**: 17-assertion golden path against the real
+  binary (init → validate → start → HTTP 201 → queue → worker → read-side
+  flip → events → replay → invoke → tables → logs → doctor → clean stop →
+  history survives). `--lang node|python`, auto-free port, quiet on
+  success, prints console tail on failure.
+- **DONE — CI matrix** (`e2e` job, required): ubuntu × {py3.10+node18,
+  py3.11+node20, py3.12+node22, py3.13+node20} + macos py3.12/node20;
+  each runs BOTH language variants.
+- **Runtime floor decided: Python 3.10+, Node 18+** (README states it;
+  CI enforces it). Note: 3.9 passes locally too — the floor is policy,
+  not a technical limit, so supporting it later is cheap if asked.
+- Findings so far (all test-side, no product bugs): Python/Node JSON
+  spacing differs (`"status": "x"` vs `"status":"x"`) → assertions are
+  whitespace-insensitive; `doctor` warns (not fails) when the local
+  runtime is newer than the declared one → warnings are a pass.
+- **Next in L1**: watch the first CI matrix run; any red combo becomes a
+  code fix + a `pulse doctor` check. Then the website FAQ gains the
+  verified matrix + the WSL2 line.

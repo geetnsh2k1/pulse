@@ -16,7 +16,7 @@ import (
 
 // Swappable for tests.
 var (
-	versionURL = "https://getpulse.run/version.json"
+	versionURL = "https://www.getpulse.run/version.json"
 	configDir  = os.UserConfigDir
 	now        = time.Now
 )

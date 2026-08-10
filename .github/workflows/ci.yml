@@ -29,6 +29,38 @@ jobs:
         run: go test ./internal/perf/ -v -count=1
       - run: go build ./...
 
+  # The golden path, on runtimes that aren't the author's laptop (PLAN §11
+  # L1). Full Python × Node cross on Linux; one sanity combo on macOS,
+  # whose runners cost ~10×. Supported floors: Python 3.10+, Node 18+.
+  e2e:
+    name: e2e ${{ matrix.os }} · py${{ matrix.python }} · node${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10", node: "18" }
+          - { os: ubuntu-latest, python: "3.11", node: "20" }
+          - { os: ubuntu-latest, python: "3.12", node: "22" }
+          - { os: ubuntu-latest, python: "3.13", node: "20" }
+          - { os: macos-latest,  python: "3.12", node: "20" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: go build -o bin/pulse ./cmd/pulse
+      - name: golden path — python functions
+        run: ./scripts/e2e.sh --lang python
+      - name: golden path — node functions
+        run: ./scripts/e2e.sh --lang node
+
   # Windows is build-only until beta (see PLAN.md risk #3): keep it compiling,
   # full support lands with the beta hardening pass.
   build-windows:
