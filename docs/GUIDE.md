@@ -562,7 +562,54 @@ config serving:
   ✗ triggers[2].function: unknown function "workr" (did you mean "worker"?)
 ```
 
-### 3.11 Growing and shrinking — `pulse add` / `pulse remove`
+### 3.11 Secrets and local values — `.env`
+
+`pulse.yaml` is committed, so it is the wrong home for an API key. Every
+project pulse creates therefore ships two more files:
+
+| file | committed? | what belongs in it |
+|---|---|---|
+| `.env` | **no** (gitignored) | real values for this machine — secrets, local URLs |
+| `.env.example` | yes | the variable *names*, so teammates know what to set |
+
+Every function receives everything in `.env`. When the same variable
+appears in both places, the more specific one wins:
+
+```
+.env  (shared, uncommitted)  →  functions.<name>.env  (per-function)  →  pulse's own AWS_* wiring
+```
+
+So `.env` is your base layer, a function's `env:` overrides it for that
+function, and the variables that make the local cloud work
+(`AWS_ENDPOINT_URL`, `AWS_LAMBDA_RUNTIME_API`, …) always win.
+
+```bash
+cp .env.example .env     # then fill in values
+pulse doctor             # confirms pulse sees the file and how many vars
+```
+
+Two deliberate behaviors worth knowing:
+
+- **Your shell is not inherited.** In AWS a function sees only its
+  configured variables, and pulse matches that — so a variable exported in
+  your terminal will *not* appear inside a handler. Put it in `.env`.
+- **Reserved names are refused, loudly.** AWS rejects variables like
+  `AWS_REGION` and `AWS_ACCESS_KEY_ID` in function configuration; pulse
+  does the same, because letting a project file override
+  `AWS_ENDPOINT_URL` would quietly point your code away from the local
+  cloud:
+
+```
+✗ .env: "AWS_ENDPOINT_URL" is reserved by the Lambda runtime and cannot be
+  set (AWS rejects it too) — remove it; pulse sets it for you
+```
+
+`.env` files support comments, `export KEY=value`, quoted values with
+`\n`/`\t` escapes, and `#` comments after unquoted values. Variable
+expansion (`${OTHER}`) and multi-line values are intentionally not
+supported, so a value never means something different than it looks.
+
+### 3.12 Growing and shrinking — `pulse add` / `pulse remove`
 
 You've met the add family — this is the recap, plus its inverse. Both edit
 `pulse.yaml` surgically (your comments survive, the result is validated or
@@ -835,7 +882,7 @@ api:
 
 functions:                       # ── your code ──
   createOrder:
-    runtime: python3.12          # nodejs18/20/22.x or python3.9–3.12
+    runtime: python3.12          # nodejs18/20/22.x or python3.10–3.13
     handler: handler.handler     # python: module.function · node: file.export
     codeDir: services/create-order   # folder with the code
     timeout: 10                  # seconds, enforced (default 3)

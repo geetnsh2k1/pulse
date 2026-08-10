@@ -55,6 +55,17 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		line: fmt.Sprintf("pulse.yaml valid — %d function(s), %d trigger(s), %d resource(s)",
 			len(cfg.Functions), len(cfg.Triggers), resources)})
 
+	// .env is optional, so report it either way — a missing file is fine,
+	// but "my variable isn't set" is much easier to diagnose when you know
+	// whether pulse saw the file at all. Never print the values.
+	if _, err := os.Stat(filepath.Join(cfg.Root, config.DotEnvFile)); err == nil {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("%s loaded — %d variable(s) shared by every function", config.DotEnvFile, len(cfg.DotEnv))})
+	} else {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("no %s (optional — put local secrets there, not in pulse.yaml)", config.DotEnvFile)})
+	}
+
 	checks = append(checks, runtimeChecks(cfg)...)
 	checks = append(checks, depChecks(cfg)...)
 

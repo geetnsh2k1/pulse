@@ -68,6 +68,11 @@ Or grab a binary from the [releases page](https://github.com/geetnsh2k1/pulse/re
 > exists — a plain GET, no payload, no identifiers, silent offline.
 > Opt out any time with `PULSE_NO_UPDATE_CHECK=1`.
 
+**Secrets:** `pulse init` scaffolds a gitignored `.env` (real values) and a
+committed `.env.example` (the names). Every function receives `.env`; a
+function's own `env:` in pulse.yaml overrides it. Reserved Lambda variables
+are refused with a clear message, exactly as AWS refuses them.
+
 **Supported runtimes:** Python 3.10+ and Node 18+, on macOS and Linux
 (Windows via WSL2). Every push runs the full golden path — init → start →
 request → queue → worker → replay → deploy-ready — across that matrix in

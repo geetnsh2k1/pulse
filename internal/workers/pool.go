@@ -34,6 +34,7 @@ const (
 // what lets the shims stay tiny and future official runtime clients plug in.
 type pool struct {
 	fn          *config.Function
+	dotEnv      map[string]string // project .env, the base layer for fn.Env
 	region      string
 	arn         string
 	projectRoot string
@@ -74,6 +75,7 @@ type flight struct {
 func newPool(fn *config.Function, cfg *config.Config, sink *logs.Sink, shimDir string) *pool {
 	return &pool{
 		fn:          fn,
+		dotEnv:      cfg.DotEnv,
 		region:      cfg.Region,
 		arn:         fmt.Sprintf("arn:aws:lambda:%s:000000000000:function:%s", cfg.Region, fn.Name),
 		projectRoot: cfg.Root,
@@ -210,7 +212,22 @@ func (p *pool) workerEnv(workerID string) []string {
 			"AWS_ENDPOINT_URL_DYNAMODB="+p.awsEndpoint,
 		)
 	}
+	// Precedence, lowest to highest: .env (shared, uncommitted) → the
+	// function's own env: (explicit, per-function) → the pulse-controlled
+	// AWS_* vars above, which must always win or the local cloud breaks.
+	// The parent shell is deliberately NOT inherited: in AWS a function
+	// sees only its configured variables, and pulse matches that.
+	merged := make(map[string]string, len(p.dotEnv)+len(p.fn.Env))
+	for k, v := range p.dotEnv {
+		merged[k] = v
+	}
 	for k, v := range p.fn.Env {
+		merged[k] = v
+	}
+	for k, v := range merged {
+		if config.ReservedEnvKeys[k] {
+			continue // validation already rejects these; never trust the merge
+		}
 		env = append(env, k+"="+v)
 	}
 	return env

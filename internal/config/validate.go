@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -125,6 +126,16 @@ func (v *validator) functions() {
 			dir := filepath.Join(c.Root, fn.CodeDir)
 			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 				v.addf(p+".codeDir", "directory %q not found in project", fn.CodeDir)
+			}
+		}
+
+		// AWS rejects reserved variables in function configuration; so do we,
+		// and for a sharper reason: AWS_ENDPOINT_URL is what points the SDK
+		// at the local façade. Silently ignoring the key would leave someone
+		// debugging why their override "did nothing".
+		for _, k := range sortedKeys(fn.Env) {
+			if ReservedEnvKeys[k] {
+				v.addf(p+".env."+k, "%q is reserved by the Lambda runtime and cannot be set (AWS rejects it too) — remove it; pulse sets it for you", k)
 			}
 		}
 
@@ -318,6 +329,16 @@ func validHTTPPath(p string) string {
 		}
 	}
 	return ""
+}
+
+// sortedKeys keeps validation messages deterministic across runs.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func contains(list []string, s string) bool {
