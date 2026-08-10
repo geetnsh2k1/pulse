@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/geetnsh2k1/pulse/internal/awscfg"
 	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/engine"
 	"github.com/geetnsh2k1/pulse/internal/store"
@@ -66,6 +67,7 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 			line: fmt.Sprintf("no %s (optional — put local secrets there, not in pulse.yaml)", config.DotEnvFile)})
 	}
 
+	checks = append(checks, awsCheck())
 	checks = append(checks, runtimeChecks(cfg)...)
 	checks = append(checks, depChecks(cfg)...)
 
@@ -117,6 +119,28 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+// awsCheck reports what pulse can see of the local AWS setup. It never
+// fails: AWS credentials are only needed for `pulse import aws`, so a
+// machine without them is perfectly healthy — it just can't import yet.
+func awsCheck() check {
+	profiles, err := awscfg.Profiles()
+	switch {
+	case err != nil:
+		return check{ok: true, line: "aws config unreadable (only needed for `pulse import aws`)"}
+	case len(profiles) == 0:
+		return check{ok: true, line: "no aws profiles (only needed for `pulse import aws`)"}
+	default:
+		names := make([]string, 0, len(profiles))
+		for _, p := range profiles {
+			names = append(names, p.Name)
+		}
+		if len(names) > 4 {
+			names = append(names[:4], "…")
+		}
+		return check{ok: true, line: fmt.Sprintf("aws profiles — %d found (%s)", len(profiles), strings.Join(names, ", "))}
+	}
+}
+
 // runEnvDoctor answers "is this machine ready for pulse?" — everything that
 // can be known without a project. Used when there's no pulse.yaml in sight,
 // which is exactly where a freshly-installed user stands.
@@ -129,6 +153,7 @@ func runEnvDoctor() error {
 	checks = append(checks, node)
 	py, pyOK := runtimeCheck("python", "python3", "--version")
 	checks = append(checks, py)
+	checks = append(checks, awsCheck())
 
 	// The update check caches here; if it isn't writable, say so quietly.
 	if dir, err := os.UserConfigDir(); err != nil {

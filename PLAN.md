@@ -1013,10 +1013,39 @@ evidence and confirmed by the user.
   the template's own `.gitignore` — it existed on the author's machine and
   would be missing from every clone. Hence `.env.tmpl`, which the existing
   render pipeline already strips to `.env`.
-- **P2 — profile foundation** (½–1 day): `internal/awscfg` — profile
-  discovery from `~/.aws/config`, `--profile`/`--region`, `AWS_PROFILE`,
-  `sts:GetCallerIdentity` preflight printing account + identity before
-  any read; wired into `pulse doctor`.
+- **P2 — profile foundation** — DONE 2026-08-11. `internal/awscfg`:
+  forgiving INI reader over `~/.aws/config` + `credentials` (honors
+  AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE; skips `[sso-session]`,
+  `[services]`; flags SSO and assume-role profiles; collects names and
+  regions only — never a key or token), `Load`/`Whoami` with a 10s cap,
+  and `Explain()` — the error taxonomy: profile-not-found (lists the real
+  ones), SSO expired, no credentials, expired/invalid token, access
+  denied, throttled, DNS, timeout, unknown. Every branch carries a fix and
+  keeps the original error wrapped. New commands `pulse aws profiles` and
+  `pulse aws whoami` (identity preflight), `--profile` Tab-completes from
+  the caller's own profiles, and `pulse doctor` gained a never-failing AWS
+  line (credentials are only needed for import). **Bare commands ask, they
+  don't fail** (aws_wizard.go): with no `--profile`/`--region`, `whoami`
+  picks the single profile silently, takes `default` when present, and
+  otherwise shows a picker; region falls back to the profile's own, then a
+  shortlist with free-text "other…". Non-TTY callers skip every prompt and
+  get the classified error, so CI never hangs. A prompted region prints
+  `aws configure set region …` rather than pulse editing ~/.aws itself.
+  **The whole credential chain is honored, not just profiles** (his catch —
+  "what if none is configured?"): environment variables, ECS/EKS task
+  roles and IRSA all work with no `~/.aws` at all, `AWS_REGION` is used
+  instead of asking, and messages name the real source ("AWS rejected the
+  credentials for environment variables (AWS_ACCESS_KEY_ID)" — never a
+  profile that isn't involved). The true empty state — no profiles, no env
+  credentials, no role — says exactly that, adapts its advice to whether
+  the aws CLI is even installed, and reassures that pulse needs read-only
+  access. Tests: INI fixtures + every taxonomy branch via stubbed smithy
+  errors + 9 scripted wizard paths (profiles, single profile, default,
+  env credentials, AWS_REGION, non-TTY, flags-win, empty state) — all
+  offline, pointed at temp config files. Shipped
+  binary with SDK linked: **17.4 MB** stripped (still under the 20 MB
+  claim; P0 predicted 18.6 MB for all seven clients — only config+sts are
+  linked so far).
 - **P3 — discovery + mapping** (3–4 days): `internal/importer` — pure
   functions from AWS shapes to an `ImportPlan{items, provenance,
   unsupported}`. No I/O in the mapper → fully unit-testable.

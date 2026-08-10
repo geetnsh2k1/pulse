@@ -85,5 +85,6 @@ func init() {
 		logsCmd,
 		eventsCmd,
 		versionCmd,
+		awsCmd,
 	)
 }
