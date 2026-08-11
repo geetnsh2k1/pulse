@@ -90,6 +90,15 @@ func (d *Discoverer) degrade(subject, detail string) {
 	d.Degraded = append(d.Degraded, Note{Subject: subject, Detail: detail})
 }
 
+// DegradedNotes is a snapshot of what couldn't be read. The caller folds
+// these into the plan so a permission gap ends up in IMPORT-NOTES.md beside
+// the project, not only in a terminal that scrolls away.
+func (d *Discoverer) DegradedNotes() []Note {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]Note(nil), d.Degraded...)
+}
+
 // FunctionSummary is the picker's row: enough to choose without another call.
 type FunctionSummary struct {
 	Name        string

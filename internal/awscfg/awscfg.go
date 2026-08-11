@@ -37,7 +37,13 @@ type Identity struct {
 	ARN     string
 	UserID  string
 	Region  string
+	// Profile is the shared-config profile in play, empty when credentials
+	// came from somewhere else. Naming a profile that isn't involved is worse
+	// than naming nothing: it sends people to edit the wrong file.
 	Profile string
+	// Source is where the credentials actually came from, in words — a profile
+	// name, "environment variables (AWS_ACCESS_KEY_ID)", or an instance role.
+	Source string
 }
 
 // Load resolves credentials without calling AWS. Errors here are about
@@ -79,13 +85,17 @@ func Whoami(ctx context.Context, o Options) (*Identity, error) {
 	if err != nil {
 		return nil, Explain(err, o)
 	}
-	return &Identity{
+	id := &Identity{
 		Account: aws.ToString(out.Account),
 		ARN:     aws.ToString(out.Arn),
 		UserID:  aws.ToString(out.UserId),
 		Region:  cfg.Region,
-		Profile: profileLabel(o),
-	}, nil
+		Source:  sourceLabel(o),
+	}
+	if !usingEnvCredentials(o) {
+		id.Profile = profileLabel(o)
+	}
+	return id, nil
 }
 
 // regionFix advises on setting a region the way this caller supplies

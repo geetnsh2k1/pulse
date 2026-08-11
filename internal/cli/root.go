@@ -86,5 +86,6 @@ func init() {
 		eventsCmd,
 		versionCmd,
 		awsCmd,
+		importCmd,
 	)
 }

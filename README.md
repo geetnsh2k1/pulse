@@ -142,7 +142,7 @@ run unchanged in real AWS.
 | Cold start to working | **~100 ms** | container per invoke | 10–30 s container |
 | Code change | save → done | mostly re-invoke | redeploy / hot-reload config |
 | Queue → worker → DLQ locally | **yes, out of the box** | no | yes, via deploy cycle |
-| Requirements | one 20 MB binary | Docker | Docker (GB-scale image) |
+| Requirements | one binary, no daemon | Docker | Docker (GB-scale image) |
 | Persistence across restarts | free, default | n/a | paid tier |
 
 Different tools for different jobs: LocalStack emulates ~100 AWS services

@@ -37,10 +37,10 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 	// ---- the function itself ----
 	envNames := sortedKeys(fn.Env)
 	p.Functions = append(p.Functions, PlannedFunction{
-		Name:       localName(fn.Name),
+		Name:       LocalName(fn.Name),
 		Runtime:    fn.Runtime,
 		Handler:    fn.Handler,
-		CodeDir:    "functions/" + localName(fn.Name),
+		CodeDir:    "functions/" + LocalName(fn.Name),
 		TimeoutSec: clampTimeout(fn.TimeoutSec),
 		MemoryMB:   clampMemory(fn.MemoryMB),
 		EnvNames:   envNames,
@@ -61,8 +61,8 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 	}
 
 	// ---- what AWS states as fact ----
-	p.mapRoutes(d.Routes, localName(fn.Name))
-	p.mapEventSources(d.EventSources, localName(fn.Name), d.AllQueues)
+	p.mapRoutes(d.Routes, LocalName(fn.Name))
+	p.mapEventSources(d.EventSources, LocalName(fn.Name), d.AllQueues)
 
 	// ---- what we can only infer ----
 	p.Guesses = InferResources(fn.Env, d.RolePolicy, d.CodeText, d.AllTables, d.AllQueues, p.claimedQueues())
@@ -88,6 +88,12 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 	}
 	return p, nil
 }
+
+// Importable reports whether this function can be imported at all, without
+// building a plan. The CLI calls it before downloading the deployment
+// package: refusing a 200 MB container-image function should not cost a
+// 200 MB download first.
+func (d Discovery) Importable() error { return refuse(d.Function) }
 
 // refuse enforces the hard limits: a function pulse cannot run is refused
 // with the reason and what to do, never imported into something broken.
@@ -434,11 +440,12 @@ func isNameByte(b byte) bool {
 
 // ---- helpers ----
 
-// localName keeps AWS names usable as pulse function names: AWS allows
-// characters pulse.yaml keys and directories shouldn't carry.
 var nonName = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
-func localName(awsName string) string {
+// LocalName is the pulse-side name for an AWS function: AWS allows
+// characters that pulse.yaml keys and directory names shouldn't carry.
+// Exported because callers have to refer to the same name pulse writes.
+func LocalName(awsName string) string {
 	// Strip the common "stack-Function-HASH" shape down to something a human
 	// would type, but never to nothing.
 	n := nonName.ReplaceAllString(awsName, "-")
@@ -449,12 +456,28 @@ func localName(awsName string) string {
 	return n
 }
 
+// sanitizeProject produces a name config.Validate accepts, which is stricter
+// than a function name: lowercase letters, digits and hyphens only, starting
+// and ending alphanumeric. A Lambda called "createOrder" would otherwise
+// become an invalid project and fail the import at its last step.
 func sanitizeProject(project, fnName string) string {
-	if project != "" {
-		return localName(project)
+	src := project
+	if src == "" {
+		src = fnName
 	}
-	return localName(fnName)
+	lower := strings.ToLower(nonProjectName.ReplaceAllString(src, "-"))
+	lower = collapseDashes.ReplaceAllString(lower, "-")
+	lower = strings.Trim(lower, "-")
+	if lower == "" {
+		return "imported"
+	}
+	return lower
 }
+
+var (
+	nonProjectName = regexp.MustCompile(`[^A-Za-z0-9]+`)
+	collapseDashes = regexp.MustCompile(`-{2,}`)
+)
 
 // normalizePath makes API Gateway paths match pulse's router: a leading
 // slash, no trailing slash, {proxy+} preserved.

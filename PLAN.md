@@ -1094,13 +1094,64 @@ evidence and confirmed by the user.
     reason**, so the picker leads with what pulse can actually run.
   - KMS-encrypted environments are flagged: the values readable there are
     ciphertext, not what the function sees.
-  Note: the shipped binary is still 17.4 MB because nothing in `cmd/pulse`
-  references the importer yet — the linker drops the service clients until
-  P4 wires the command, at which point P0's 18.6 MB measurement applies.
-- **P4 — CLI** (2–3 days): interactive `pulse import aws` (profile →
-  region → function picker with trigger badges → resource confirmation →
-  preview → write) and scriptable `--function X --profile Y --yes`.
-  `--dry-run` writes nothing. `--into .` for additive merge.
+  Note: the binary was still 17.4 MB at this point because nothing in
+  `cmd/pulse` referenced the importer — the linker drops the service clients
+  until P4 wires the command. (It then cost far more than P0 predicted; see
+  the correction in §12.7.)
+- **P4 (writer + CLI) — DONE 2026-08-11.** `pulse import aws [function]`
+  with `--profile/--region/--function/--name/--dry-run/--yes/--with-values`.
+  The flow: identity preflight (account on screen before anything is read)
+  → function picker → concurrent discovery → code download → guess
+  confirmation → exact description of what was confirmed → full preview →
+  atomic write. 76 new test cases, none of which can reach AWS.
+  - **`internal/importer/write.go`** — the project is assembled in a
+    `.pulse-import-*` staging directory *beside* the destination (same
+    filesystem, so the final move is an atomic rename), and only after the
+    written `pulse.yaml` has been re-loaded through `config.Load`. A failed
+    or refused import leaves nothing behind, not even the staging dir.
+    `pulse.yaml` is hand-rendered in the same shape `pulse init` scaffolds
+    (yaml.Marshal would emit `env: {}`, `buckets: []`, `api: {port: 0}`),
+    with route paths quoted so `{id}` survives, and non-string key types
+    written explicitly. `.env` is written 0600; `.env.example`,
+    `.gitignore` (with `.env` in it) and `IMPORT-NOTES.md` alongside.
+  - **`CodePackage`** — the deployment package is fetched *once*, before any
+    question is asked. Two reasons: a presigned URL can't expire while the
+    user thinks, and the same bytes feed the code scan (vendored
+    `node_modules`/`site-packages` skipped — a resource name found in a
+    dependency is noise, not evidence). Extraction has a zip-slip guard and
+    an expanded-size cap, both tested with hostile archives.
+  - **Interactive parts** (`import_wizard.go`) are pure functions over an
+    injected reader/writer: the function picker lists what can't run *with
+    the reason* (a refusal after choosing wastes the user's time), and the
+    guess checklist pre-checks strong evidence so Enter is the common
+    answer. `--yes` and non-TTY take exactly the pre-checked defaults and
+    never prompt — proven by a test that asserts no prompt string reaches
+    the screen.
+  - **Offline end-to-end test** (`import_e2e_test.go`): a local server
+    speaks enough STS/Lambda/SQS/DynamoDB/IAM (via `AWS_ENDPOINT_URL`) for
+    the *real* SDK clients to run the whole command. It asserts the exact
+    call list — and fails the test if pulse ever sends a PUT/POST-to-mutate
+    /DELETE, so "read-only" is enforced by machine, not by intention.
+    Covers the golden path, `--dry-run`, `--with-values`, an IAM denial,
+    declining at the confirmation, `--name`, and the non-interactive path.
+  - **Three real bugs found by building it:**
+    1. `sanitizeProject` produced invalid project names — a Lambda called
+       `createOrder` yielded project `createOrder`, which `config.Validate`
+       rejects (lowercase/digits/hyphens only). The import would have
+       failed at its very last step. Now normalized, with a table test.
+    2. `os.Rename` onto an existing *empty* directory succeeds on Linux and
+       fails on macOS. The empty dir is now removed first with `os.Remove`,
+       which refuses a non-empty directory — so if a file appeared during
+       the download, the import stops instead of eating it.
+    3. `Identity.Profile` said `default` even when credentials came from
+       environment variables — the exact mislabeling fixed for error
+       messages in P2, still present in the identity display (and it would
+       have been written into IMPORT-NOTES.md). Now `Profile` is empty
+       unless a profile is really in play, with `Source` carrying the truth.
+  - **Deferred as decided:** `--into .` additive merge is NOT built (§12.9
+    settled on new-project-only for v1).
+  - **Binary: 30.6 MB stripped, 9.4 MB gzipped** — see the correction in
+    §12.7. Within the "~30 MB is acceptable" decision from §12.6.
 - **P5 — errors + docs** (1–1.5 days): the taxonomy in 12.5, the
   minimal read-only IAM policy printed on AccessDenied, GUIDE section,
   `pulse doctor` awareness.
@@ -1147,8 +1198,35 @@ and under-reports):
 | unstripped dev build | 20.9 MB | 27.0 MB | +6.1 MB |
 
 Method validated: the stripped baseline gzips to 5.8 MB, exactly matching
-the real v0.1.0 release asset. **The "one 20 MB binary" claim survives
-(18.6 < 20) — no website/README size edits needed.**
+the real v0.1.0 release asset.
+
+> **CORRECTED at P4 (measured 2026-08-11). The estimate above was wrong and
+> the "20 MB" claim does NOT survive.** Constructing a client links far
+> less than *calling its operations* does: each operation drags in its own
+> serializer, deserializer and generated error handling. Real, measured by
+> building the finished command with clients removed one at a time:
+>
+> | linked clients | stripped | delta |
+> |---|---|---|
+> | v0.1.0 (no SDK) | 14.4 MB | — |
+> | config + sts (P2, shipped) | 17.4 MB | +3.0 |
+> | + lambda | 20.7 MB | +3.3 |
+> | + sqs + dynamodb | 23.7 MB | +3.0 |
+> | + apigatewayv2 | 26.3 MB | +2.6 |
+> | + iam (**what ships**) | **30.6 MB** | +4.3 |
+>
+> gzipped: **9.4 MB** (was 5.8 MB). Inside §12.6's "~30 MB is acceptable",
+> but every "one 20 MB binary" claim is now false and must change with the
+> v0.2.0 release. README's comparison row is already reworded to "one
+> binary, no daemon" — a claim that stays true as the SDK grows. **Still to
+> do (P7):** website `app/page.tsx` (compare table + the Docker FAQ answer)
+> and both `/vs` pages.
+>
+> If the size is ever worth trading back: dropping the IAM client saves
+> 4.3 MB and only weakens guess *evidence* (env-var and code signals
+> remain); dropping apigatewayv2 saves 2.6 MB but loses the route fallback
+> for wildcarded resource policies, which is a real capability. Both are
+> one-line changes in `NewDiscoverer`.
 
 `config.SupportedRuntimes` fixed: python3.13 added, python3.9 removed so
 config validation matches the documented+CI-tested floor (Python 3.10+,

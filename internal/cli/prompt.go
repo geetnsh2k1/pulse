@@ -52,6 +52,89 @@ func askPick(in *bufio.Reader, out io.Writer, question string, options []pickOpt
 	}
 }
 
+// multiOption is one toggleable choice in a checklist.
+type multiOption struct {
+	label   string
+	desc    string // dim explanation — for guesses, the evidence
+	checked bool   // the default answer
+}
+
+// askMultiPick renders a checklist and lets the user toggle entries. Enter
+// accepts what is shown, which is the point: pulse pre-checks what it has
+// strong evidence for, so the common case costs one keystroke and the
+// uncertain items are still visible with their reasons.
+func askMultiPick(in *bufio.Reader, out io.Writer, question string, options []multiOption) ([]bool, error) {
+	checked := make([]bool, len(options))
+	for i, o := range options {
+		checked[i] = o.checked
+	}
+	for {
+		fmt.Fprintf(out, "\n%s %s\n", ui.Accent("?"), question)
+		for i, o := range options {
+			box := ui.Dim("[ ]")
+			if checked[i] {
+				box = ui.Accent("[x]")
+			}
+			line := fmt.Sprintf("    %s %s %s", box, ui.Dim(fmt.Sprintf("%d.", i+1)), ui.Bold(o.label))
+			if o.desc != "" {
+				line += "  " + ui.Dim(o.desc)
+			}
+			fmt.Fprintln(out, line)
+		}
+		fmt.Fprintf(out, "  %s › ", ui.Dim(fmt.Sprintf("toggle 1-%d · all · none · Enter accepts", len(options))))
+
+		line, err := readAnswer(in)
+		if err != nil {
+			return nil, err
+		}
+		switch strings.ToLower(line) {
+		case "":
+			return checked, nil
+		case "all":
+			for i := range checked {
+				checked[i] = true
+			}
+			continue
+		case "none":
+			for i := range checked {
+				checked[i] = false
+			}
+			continue
+		}
+
+		var bad []string
+		for _, tok := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+			switch idx := matchOption(tok, options); idx {
+			case -1:
+				bad = append(bad, tok)
+			default:
+				checked[idx] = !checked[idx]
+			}
+		}
+		if len(bad) > 0 {
+			fmt.Fprintf(out, "  %s don't know %s — use numbers 1-%d, or a name\n",
+				ui.Err("✗"), strings.Join(bad, ", "), len(options))
+		}
+	}
+}
+
+// matchOption accepts a 1-based number or the option's own label, since
+// typing "orders" is more natural than counting rows.
+func matchOption(tok string, options []multiOption) int {
+	if n, err := strconv.Atoi(tok); err == nil {
+		if n >= 1 && n <= len(options) {
+			return n - 1
+		}
+		return -1
+	}
+	for i, o := range options {
+		if strings.EqualFold(o.label, tok) {
+			return i
+		}
+	}
+	return -1
+}
+
 // askText prompts for one line; Enter returns def. validate may be nil.
 func askText(in *bufio.Reader, out io.Writer, question, def string, validate func(string) error) (string, error) {
 	hint := ""

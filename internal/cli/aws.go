@@ -89,7 +89,13 @@ before importing anything, so you always know whose account is in play.`,
 			return err
 		}
 		fmt.Printf("%s\n\n", ui.AccentBold("⚡ aws identity"))
-		fmt.Printf("  %s  %s\n", ui.Dim("profile"), ui.Bold(id.Profile))
+		// Never label environment credentials as a profile: someone told to
+		// fix "profile default" would go editing a file that isn't in play.
+		if id.Profile != "" {
+			fmt.Printf("  %s  %s\n", ui.Dim("profile"), ui.Bold(id.Profile))
+		} else {
+			fmt.Printf("  %s  %s\n", ui.Dim("from   "), ui.Bold(id.Source))
+		}
 		fmt.Printf("  %s  %s\n", ui.Dim("account"), ui.Bold(id.Account))
 		fmt.Printf("  %s   %s\n", ui.Dim("region"), ui.Bold(id.Region))
 		fmt.Printf("  %s      %s\n", ui.Dim("arn"), ui.Dim(id.ARN))

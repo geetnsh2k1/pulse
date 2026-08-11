@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/geetnsh2k1/pulse/internal/config"
 )
 
 // zipFn is a minimal importable function; tests tweak one thing at a time.
@@ -245,6 +247,26 @@ func TestBuildPlanNamesAreSafe(t *testing.T) {
 	}
 	if p.Project == "" {
 		t.Error("project must fall back to the function name")
+	}
+	// A project name is stricter than a function name — config.Validate wants
+	// lowercase letters, digits and hyphens only.
+	if !config.ValidProjectName(p.Project) {
+		t.Errorf("project %q would fail pulse.yaml validation", p.Project)
+	}
+}
+
+func TestSanitizeProjectAlwaysProducesAValidName(t *testing.T) {
+	for _, in := range []string{
+		"createOrder", "my-stack_Create Order.v2", "SHOUTING", "__weird__",
+		"9lives", "-leading-dash-", "a", "····", "Order.Service--v2",
+	} {
+		got := sanitizeProject("", in)
+		if !config.ValidProjectName(got) {
+			t.Errorf("sanitizeProject(%q) = %q, which pulse.yaml would reject", in, got)
+		}
+	}
+	if got := sanitizeProject("MyApp", "ignored"); got != "myapp" {
+		t.Errorf("an explicit --name should still be normalized, got %q", got)
 	}
 }
 
