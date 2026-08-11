@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/engine"
 	"github.com/geetnsh2k1/pulse/internal/gateway"
 	"github.com/geetnsh2k1/pulse/internal/store"
@@ -59,6 +60,7 @@ func runStart(_ *cobra.Command, _ []string) error {
 	defer st.Close()
 
 	eng := engine.New(cfg, st)
+	eng.PortOverride = flagPort // must survive pulse.yaml / .env reloads
 	eng.OnEvent = func(msg string) { fmt.Println(styleEventLine(msg)) }
 	if err := eng.Start(t0); err != nil {
 		return err
@@ -93,6 +95,15 @@ func runStart(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  %s    %s\n", ui.Dim("control"), ui.Dim(eng.ControlAddr()))
 	fmt.Printf("%s %s\n", ui.OK("ready in "+eng.ReadyIn().Round(time.Millisecond).String()),
 		ui.Dim("— code & pulse.yaml changes apply live · Ctrl+C to stop"))
+
+	// A just-imported project boots fine and then fails on its first request,
+	// because .env is still placeholders. Say it here, once, where it's cheap
+	// to act on — not inside a stack trace.
+	if left := cfg.PlaceholderKeys(); len(left) > 0 {
+		fmt.Println(ui.Warn("✱ ") + ui.Hint(fmt.Sprintf(
+			"%d value(s) in .env still say %s (%s) — fill them in or functions using them will fail",
+			len(left), config.Placeholder, strings.Join(left, ", "))))
+	}
 
 	// Once-a-day update hint, printed into the console stream whenever the
 	// answer arrives — never delays startup, never complains offline.

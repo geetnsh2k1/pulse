@@ -34,8 +34,23 @@ func resolveAWSTarget(cmd *cobra.Command, profile, region string) (awscfg.Option
 		return o, err
 	}
 
-	in := bufio.NewReader(cmd.InOrStdin())
+	in := promptIn(cmd)
 	out := cmd.OutOrStdout()
+
+	// A named profile that doesn't exist is a typo, and the SDK only says so
+	// several steps later — after pulse has already asked which region to use
+	// for a profile that isn't there. Catch it before asking anything.
+	if o.Profile != "" && len(profiles) > 0 && !hasProfile(profiles, o.Profile) {
+		names := make([]string, len(profiles))
+		for i, p := range profiles {
+			names[i] = p.Name
+		}
+		return o, &awscfg.Error{
+			Cause: "profile not found",
+			Msg:   fmt.Sprintf("AWS profile %q isn't configured on this machine", o.Profile),
+			Fix:   clause(suggestion(o.Profile, names), "available profiles: "+strings.Join(names, ", ")),
+		}
+	}
 
 	// Profiles are only one branch of AWS's credential chain. Environment
 	// variables, ECS/EKS task roles and IRSA are equally valid — and a CI
@@ -80,6 +95,16 @@ func resolveAWSTarget(cmd *cobra.Command, profile, region string) (awscfg.Option
 		o.Region = r
 	}
 	return o, nil
+}
+
+// hasProfile reports whether the named profile was found on this machine.
+func hasProfile(profiles []awscfg.Profile, name string) bool {
+	for _, p := range profiles {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // noCredentialsError is the genuine empty state: no profiles, no

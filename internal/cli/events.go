@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -141,7 +140,7 @@ func pickEvent(cmd *cobra.Command, cfg *config.Config) (string, error) {
 		opts[i] = pickOption{label: shortEventID(ev.ID),
 			desc: fmt.Sprintf("%s  %s → %s · %s", fmtEventTime(ev.CreatedAt), ev.Type, ev.Function, outcome)}
 	}
-	in := bufio.NewReader(cmd.InOrStdin())
+	in := promptIn(cmd)
 	i, err := askPick(in, cmd.OutOrStdout(), "which event should I replay?", opts, 1)
 	if err != nil {
 		return "", err

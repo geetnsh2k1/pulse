@@ -62,6 +62,14 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	if _, err := os.Stat(filepath.Join(cfg.Root, config.DotEnvFile)); err == nil {
 		checks = append(checks, check{ok: true,
 			line: fmt.Sprintf("%s loaded — %d variable(s) shared by every function", config.DotEnvFile, len(cfg.DotEnv))})
+		// A freshly imported project starts with placeholders. Saying so here
+		// beats letting the first request fail on a table named CHANGE_ME.
+		if left := cfg.PlaceholderKeys(); len(left) > 0 {
+			checks = append(checks, check{ok: false, warn: true,
+				line: fmt.Sprintf("%d value(s) in %s still say %s: %s",
+					len(left), config.DotEnvFile, config.Placeholder, strings.Join(left, ", ")),
+				fix: "fill them in — functions that use them will fail until you do"})
+		}
 	} else {
 		checks = append(checks, check{ok: true,
 			line: fmt.Sprintf("no %s (optional — put local secrets there, not in pulse.yaml)", config.DotEnvFile)})

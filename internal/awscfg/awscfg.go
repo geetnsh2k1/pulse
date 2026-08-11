@@ -275,6 +275,22 @@ func DeniedPermission(err error) string {
 	return IAMAction(op.Service(), op.Operation())
 }
 
+// IsNotFound reports whether AWS answered "that thing doesn't exist" — the
+// one failure that is usually a typo rather than a problem with the setup, so
+// callers can say something specific instead of relaying a 404.
+func IsNotFound(err error) bool {
+	var api smithy.APIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	switch api.ErrorCode() {
+	case "ResourceNotFoundException", "NoSuchEntity", "NotFoundException",
+		"QueueDoesNotExist", "AWS.SimpleQueueService.NonExistentQueue":
+		return true
+	}
+	return false
+}
+
 // IAMAction turns an SDK service + operation into the IAM action string a
 // policy has to grant — "Lambda"/"GetFunction" → "lambda:GetFunction".
 //

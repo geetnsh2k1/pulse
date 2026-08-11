@@ -4,15 +4,77 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/spf13/cobra"
+
+	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // Generic interactive prompts — the init wizard's pattern, reusable by
 // every command that can ask instead of erroring. All prompts read from an
 // injected reader so tests can script answers.
+
+// promptIn returns the ONE buffered reader for this command's stdin.
+//
+// Two bufio.Readers over the same stream silently lose input: the first fills
+// its 4 KB buffer from the pipe and the second sees EOF. That broke
+// `printf '1\n1\n' | pulse import aws` — the profile picker read every line,
+// then the function picker reported "cancelled" — and it can bite a person at
+// a terminal too, by pasting several answers at once. Any command that asks
+// more than one question, or delegates to something else that asks, must
+// share this reader.
+func promptIn(cmd *cobra.Command) *bufio.Reader {
+	r := cmd.InOrStdin()
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	if sameReader(promptFor, r) && promptCached != nil {
+		return promptCached
+	}
+	promptFor, promptCached = r, bufio.NewReader(r)
+	return promptCached
+}
+
+var (
+	promptMu     sync.Mutex
+	promptFor    io.Reader
+	promptCached *bufio.Reader
+)
+
+// sameReader compares two readers without risking the panic that comparing
+// non-comparable dynamic types would cause.
+func sameReader(a, b io.Reader) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
+// suggestion turns config.DidYouMean's parenthetical into a clause that can
+// stand on its own inside a fix line.
+func suggestion(input string, candidates []string) string {
+	s := strings.TrimSpace(config.DidYouMean(input, candidates))
+	return strings.TrimSuffix(strings.TrimPrefix(s, "("), ")")
+}
+
+// clause joins the non-empty parts of a fix with pulse's separator.
+func clause(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, strings.TrimSpace(p))
+		}
+	}
+	return strings.Join(kept, " · ")
+}
 
 // pickOption is one numbered choice.
 type pickOption struct {

@@ -351,3 +351,25 @@ func TestTableAdminAndGuardrails(t *testing.T) {
 		t.Errorf("stats = %+v", stats)
 	}
 }
+
+// An imported project's first request hits this, and the generic advice would
+// be actively wrong: nobody wants a table called CHANGE_ME. The real fix is
+// one line in .env.
+func TestTableNotFoundExplainsThePlaceholder(t *testing.T) {
+	err := tableNotFoundErr(config.Placeholder, []string{"orders"})
+	if !strings.Contains(err.Message, ".env") {
+		t.Errorf("message should point at .env, got: %s", err.Message)
+	}
+	if strings.Contains(err.Message, "Add it to pulse.yaml") {
+		t.Errorf("must not advise declaring a table named %s: %s", config.Placeholder, err.Message)
+	}
+	if !strings.Contains(err.Message, "orders") {
+		t.Errorf("the real tables are still worth listing: %s", err.Message)
+	}
+
+	// A genuinely missing table keeps the teaching snippet.
+	normal := tableNotFoundErr("widgets", []string{"orders"})
+	if !strings.Contains(normal.Message, "Add it to pulse.yaml") {
+		t.Errorf("a real missing table should still teach the fix: %s", normal.Message)
+	}
+}

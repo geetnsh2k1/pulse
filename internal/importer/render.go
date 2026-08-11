@@ -12,7 +12,10 @@ import (
 // Lambda env vars routinely hold live API keys; copying them onto disk
 // because someone ran an import would be a nasty surprise, so values are
 // opt-in (--with-values) and this marker makes the gap obvious.
-const placeholder = "CHANGE_ME"
+//
+// It lives in config because the runtime recognizes it too: a table named
+// CHANGE_ME produces "your .env isn't filled in", not "declare this table".
+const placeholder = config.Placeholder
 
 // ToConfig turns a plan into a real *config.Config. Building the same
 // structure pulse.yaml parses into means the plan can be run through the

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/geetnsh2k1/pulse/internal/importer"
 )
 
@@ -307,11 +309,54 @@ func TestNotInsideAProjectRefusesWithAFix(t *testing.T) {
 
 func TestHumanSize(t *testing.T) {
 	cases := map[int64]string{
-		0: "size unknown", 4 << 10: "4 KB", 900 << 10: "900 KB", 4 << 20: "4.0 MB",
+		0: "size unknown", 612: "612 bytes", 4 << 10: "4 KB", 900 << 10: "900 KB", 4 << 20: "4.0 MB",
 	}
 	for in, want := range cases {
 		if got := humanSize(in); got != want {
 			t.Errorf("humanSize(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Every prompt in one command run must share one reader. Two bufio.Readers
+// over the same stdin lose input — the first fills its 4 KB buffer from the
+// pipe and the second sees EOF. That broke `printf '1\n1\n' | pulse import aws`
+// in exactly the way a user would hit it: the profile picker ate the answer
+// meant for the function picker, which then reported "cancelled".
+func TestPromptsShareOneReader(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader("2\n3\n"))
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+
+	opts := []pickOption{{label: "a"}, {label: "b"}, {label: "c"}}
+	first, err := askPick(promptIn(cmd), out, "first?", opts, 1)
+	if err != nil {
+		t.Fatalf("first prompt: %v", err)
+	}
+	// A second helper, fetching the reader independently, must continue where
+	// the first stopped rather than find the stream drained.
+	second, err := askPick(promptIn(cmd), out, "second?", opts, 1)
+	if err != nil {
+		t.Fatalf("second prompt: %v (the first reader swallowed the rest of stdin)", err)
+	}
+	if first != 1 || second != 2 {
+		t.Errorf("answers = %d, %d; want 1, 2", first, second)
+	}
+}
+
+func TestSuggestionAndClauseReadAsSentences(t *testing.T) {
+	if got := suggestion("prd", []string{"dev", "prod"}); got != `did you mean "prod"?` {
+		t.Errorf("suggestion = %q", got)
+	}
+	if got := suggestion("zzzzzz", []string{"dev", "prod"}); got != "" {
+		t.Errorf("no close match should suggest nothing, got %q", got)
+	}
+	if got := clause("", "available profiles: dev", ""); got != "available profiles: dev" {
+		t.Errorf("clause should drop empties, got %q", got)
+	}
+	if got := clause(`did you mean "prod"?`, "available: dev, prod"); got != `did you mean "prod"? · available: dev, prod` {
+		t.Errorf("clause = %q", got)
 	}
 }

@@ -128,6 +128,12 @@ func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		f.json(w, map[string]any{"Policy": string(policy)})
 
+	// Any other function name: what a typo looks like coming back from AWS.
+	case strings.HasPrefix(r.URL.Path, "/2015-03-31/functions/"):
+		w.Header().Set("X-Amzn-Errortype", "ResourceNotFoundException")
+		w.WriteHeader(http.StatusNotFound)
+		f.json(w, map[string]any{"message": "Function not found: " + r.URL.Path})
+
 	// ---- API Gateway: REST-JSON. Nothing to add; the policy was precise. ----
 	case strings.HasPrefix(r.URL.Path, "/v2/apis"):
 		f.log("GetApis")
@@ -671,5 +677,55 @@ func TestImportAWSPolicyWorksWithoutCredentials(t *testing.T) {
 	}
 	if strings.Contains(screen, "\"Action\": \"*\"") {
 		t.Error("the policy must not contain a wildcard action")
+	}
+}
+
+// A typo is the likeliest mistake anyone makes here, and the generic taxonomy
+// answers it with "https response error StatusCode: 404" plus advice to check
+// connectivity — which is fine and not the problem.
+func TestImportAWSTypoSuggestsTheRealFunction(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+
+	_, dir, err := runImport(t, "", "--function", "createOrderr", "--yes")
+	if err == nil {
+		t.Fatal("want an error for a function that doesn't exist")
+	}
+	for _, want := range []string{`no Lambda function named "createOrderr"`, "eu-west-1", `did you mean "createOrder"?`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "https response error") || strings.Contains(err.Error(), "connectivity") {
+		t.Errorf("error is relaying SDK internals or wrong advice: %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("nothing should be written, found %v", entries)
+	}
+}
+
+// A profile that doesn't exist must be caught before pulse asks anything —
+// it used to prompt for a region for a profile that isn't there.
+func TestImportAWSUnknownProfileFailsBeforeAnyQuestion(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config")
+	if err := os.WriteFile(cfg, []byte("[profile dev]\nregion = eu-west-1\n[profile prod]\nregion = us-east-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	screen, _, err := runImport(t, "", "--function", "createOrder", "--profile", "prd", "--yes")
+	if err == nil {
+		t.Fatal("want an error for an unknown profile")
+	}
+	if !strings.Contains(err.Error(), `"prd" isn't configured`) || !strings.Contains(err.Error(), `did you mean "prod"?`) {
+		t.Errorf("error = %v", err)
+	}
+	if strings.Contains(screen, "which region?") {
+		t.Errorf("asked for a region for a profile that doesn't exist:\n%s", screen)
 	}
 }

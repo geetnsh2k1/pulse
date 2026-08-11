@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -86,7 +85,7 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	in := bufio.NewReader(cmd.InOrStdin())
+	in := promptIn(cmd)
 	out := cmd.OutOrStdout()
 
 	// --policy is a document, not a call. It runs before anything touches
@@ -153,7 +152,7 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	d, err := disco.Discover(ctx, fnName)
 	if err != nil {
 		sp.Fail("couldn't read the function")
-		return awscfg.Explain(err, opts)
+		return explainMissingFunction(ctx, disco, opts, fnName, id.Region, err)
 	}
 	sp.Success()
 
@@ -246,6 +245,40 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 		ui.Dim(fmt.Sprintf("— %s · %d files", plan.Summary(), len(written.Files))))
 	printImportNextSteps(out, plan, dest, written)
 	return nil
+}
+
+// explainMissingFunction turns the likeliest mistake — a typo, or the right
+// name in the wrong region — into a useful answer. The generic taxonomy can't:
+// it would relay "https response error StatusCode: 404" and advise checking
+// connectivity, which is fine and not the problem.
+//
+// One extra ListFunctions buys a "did you mean" and the real list. It's the
+// error path, the user is already stuck, and if that read is denied too the
+// message simply stays shorter.
+func explainMissingFunction(ctx context.Context, disco *importer.Discoverer,
+	opts awscfg.Options, fnName, region string, err error) error {
+
+	if !awscfg.IsNotFound(err) {
+		return awscfg.Explain(err, opts)
+	}
+	fix := "run `pulse import aws` with no name to pick from the list, or try another --region"
+	if list, lerr := disco.ListFunctions(ctx); lerr == nil && len(list) > 0 {
+		names := make([]string, 0, len(list))
+		for _, f := range list {
+			names = append(names, f.Name)
+		}
+		if guess := suggestion(fnName, names); guess != "" {
+			fix = clause(guess, "or run `pulse import aws` to pick from the list")
+		} else if len(names) <= 8 {
+			fix = "functions in " + region + ": " + strings.Join(names, ", ")
+		}
+	}
+	return &awscfg.Error{
+		Cause: "no such function",
+		Err:   err,
+		Msg:   fmt.Sprintf("no Lambda function named %q in %s", fnName, region),
+		Fix:   fix,
+	}
 }
 
 // printReadPolicy prints the permissions import needs, in the two forms

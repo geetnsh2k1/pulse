@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -91,7 +90,7 @@ func pickQueue(cmd *cobra.Command, cfg *config.Config) (string, error) {
 	for i, n := range names {
 		opts[i] = pickOption{label: n}
 	}
-	i, err := askPick(bufio.NewReader(cmd.InOrStdin()), cmd.OutOrStdout(), "which queue?", opts, 1)
+	i, err := askPick(promptIn(cmd), cmd.OutOrStdout(), "which queue?", opts, 1)
 	if err != nil {
 		return "", err
 	}

@@ -2,8 +2,10 @@ package config
 
 import "fmt"
 
-// didYouMean returns ` (did you mean "X"?)` when a close match exists, else "".
-func didYouMean(input string, candidates []string) string {
+// DidYouMean returns ` (did you mean "X"?)` when a close match exists, else "".
+// Exported because a mistyped name is a mistyped name wherever it appears —
+// a runtime in pulse.yaml, or a Lambda name passed to `pulse import aws`.
+func DidYouMean(input string, candidates []string) string {
 	if s := closest(input, candidates); s != "" {
 		return fmt.Sprintf(" (did you mean %q?)", s)
 	}

@@ -47,7 +47,7 @@ func stdoutIsTerminal() bool {
 // flag path uses, and returns the project name. Reads from cmd.InOrStdin()
 // so tests can feed answers.
 func initWizard(cmd *cobra.Command) (string, error) {
-	in := bufio.NewReader(cmd.InOrStdin())
+	in := promptIn(cmd)
 	out := cmd.OutOrStdout()
 
 	fmt.Fprintf(out, "%s %s\n", ui.AccentBold("⚡ pulse"), ui.Dim("— three quick questions, Enter picks the default"))

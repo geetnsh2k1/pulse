@@ -109,12 +109,25 @@ func tableNotFoundErr(name string, knownTables []string) *awsfacade.APIError {
 	if known == "" {
 		known = "none yet"
 	}
+	msg := fmt.Sprintf(
+		"table %q is not declared. Add it to pulse.yaml:\n\n  resources:\n    tables:\n      %s:\n        pk: id\n\n(known tables: %s)",
+		name, name, known)
+
+	// The name is the import placeholder, so the advice above would be wrong:
+	// nobody wants a table called CHANGE_ME. The real problem is one line in
+	// .env, and this is the first request an imported project ever serves.
+	if name == config.Placeholder {
+		msg = fmt.Sprintf(
+			"the table name is still %q — an environment variable in .env hasn't been filled in yet.\n\n"+
+				"  Open .env and replace every %s with the real value, then try again.\n"+
+				"  (this project's tables: %s)",
+			config.Placeholder, config.Placeholder, known)
+	}
+
 	return &awsfacade.APIError{
 		Type:      "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException",
 		QueryCode: "ResourceNotFoundException",
-		Message: fmt.Sprintf(
-			"table %q is not declared. Add it to pulse.yaml:\n\n  resources:\n    tables:\n      %s:\n        pk: id\n\n(known tables: %s)",
-			name, name, known),
+		Message:   msg,
 	}
 }
 

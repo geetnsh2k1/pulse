@@ -24,6 +24,26 @@ const FileName = "pulse.yaml"
 // overrides) beside pulse.yaml. Optional — projects work without it.
 const DotEnvFile = ".env"
 
+// Placeholder is what an unfilled value looks like. `pulse import aws` writes
+// it for every environment value it deliberately didn't copy, and the runtime
+// recognizes it: a resource named "CHANGE_ME" is not a missing resource, it's
+// an unfilled .env — and saying so is the difference between a five-second fix
+// and a confusing hunt.
+const Placeholder = "CHANGE_ME"
+
+// PlaceholderKeys lists the variables still left at Placeholder, sorted, so
+// `pulse start` and `pulse doctor` can warn before a function fails.
+func (c *Config) PlaceholderKeys() []string {
+	var out []string
+	for k, v := range c.DotEnv {
+		if v == Placeholder {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SupportedRuntimes is the set of Lambda runtimes pulse certifies — the
 // same matrix scripts/e2e.sh exercises in CI (Python 3.10+, Node 18+).
 // python3.9 was dropped once AWS retired it; python3.13 is current.

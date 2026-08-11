@@ -243,6 +243,10 @@ func humanSize(b int64) string {
 	switch {
 	case b <= 0:
 		return "size unknown"
+	case b < 1<<10:
+		// A small handler is genuinely a few hundred bytes; rounding it to
+		// "0 KB" reads like pulse failed to measure it.
+		return fmt.Sprintf("%d bytes", b)
 	case b < 1<<20:
 		return fmt.Sprintf("%d KB", b>>10)
 	default:

@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -37,7 +36,7 @@ New here? Run: pulse tour`,
 		wave := ui.Wave()
 		fmt.Println(wave[0])
 		fmt.Printf("%s   %s %s\n", wave[1], ui.Bold("pulse"), ui.Dim("— no project in this folder yet"))
-		in := bufio.NewReader(cmd.InOrStdin())
+		in := promptIn(cmd)
 		i, err := askPick(in, cmd.OutOrStdout(), "what would you like?", []pickOption{
 			{label: "tour", desc: "learn pulse hands-on, 5 minutes"},
 			{label: "init", desc: "create a new project right here"},

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,7 +24,7 @@ func resolveFunctionArg(cmd *cobra.Command, args []string, verb, question string
 		return "", err
 	}
 	if stdinIsInteractive() && len(cfg.Functions) > 0 {
-		return pickFunction(bufio.NewReader(cmd.InOrStdin()), cmd.OutOrStdout(), cfg, question)
+		return pickFunction(promptIn(cmd), cmd.OutOrStdout(), cfg, question)
 	}
 	names := "run `pulse list` to see them"
 	if len(cfg.Functions) > 0 {

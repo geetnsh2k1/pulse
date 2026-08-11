@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -20,7 +19,7 @@ func runAddWizard(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	in := bufio.NewReader(cmd.InOrStdin())
+	in := promptIn(cmd)
 	out := cmd.OutOrStdout()
 
 	kind, err := askPick(in, out, "what do you want to add?", []pickOption{

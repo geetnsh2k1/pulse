@@ -1202,9 +1202,57 @@ evidence and confirmed by the user.
     IMPORT-NOTES.md, so the old text was useless twice over. Reads:
     *"execution role policy — no permission for iam:ListRolePolicies (see
     `pulse import aws --policy`) · resource guesses rely on env vars alone"*.
-- **P6 — verification** (1–2 days): unit tests on stubbed responses;
-  recorded fixtures; a live run against a real account; e2e extension for
-  the offline paths.
+- **P5.5 — REAL-TERMINAL ACCEPTANCE RUN, DONE 2026-08-12** (his ask: "make
+  sure till P5 everything is done right, with testing from real terminal").
+  A standalone stdlib-only fake AWS (`scratchpad/fakeaws`, speaks STS/Lambda/
+  SQS/DynamoDB/IAM over AWS_ENDPOINT_URL) let the *shipped binary* run the
+  whole journey with no account touched — the credentials boundary stays
+  undecided. Journey covered: no-credentials empty state → `pulse aws
+  profiles`/`whoami` → interactive profile+function picker → guess checklist →
+  preview → write → `pulse validate`/`list` → venv install → `pulse start` →
+  live HTTP request → **item actually persisted in the local table** →
+  `pulse send` through the imported queue trigger → `pulse events` + replay →
+  `pulse doctor` → every error path. **Six real bugs found, all fixed, all
+  with regression tests:**
+  1. **Two `bufio.Reader`s over one stdin** (the worst): the profile picker's
+     4 KB buffer swallowed the answers meant for the function picker, so
+     `printf '1\n1\n' | pulse import aws` died with "cancelled" — and pasting
+     several answers at a terminal would do the same. Ten sites created their
+     own reader; all now share `promptIn(cmd)`. Chains that collided:
+     import→resolveAWSTarget and bare `pulse`→initWizard.
+  2. **`.env` edits did nothing.** `ignoredPath` drops every dotfile, so the
+     watcher never saw `.env`. An imported project's own error says "fill in
+     .env, then try again" — which was a lie; the function kept its boot-time
+     values. `.env` is now checked before ignoredPath and reloads the config
+     like pulse.yaml (the engine's reload already re-reads it), and the console
+     names the file that changed instead of always saying pulse.yaml.
+  3. **`pulse start --port N` lost the port on any hot-apply** (pre-existing,
+     unrelated to import): applyConfig re-reads pulse.yaml, which knows
+     nothing about the flag, so the API silently moved to 3000 mid-session and
+     every open client broke. `Engine.PortOverride` now survives reloads. The
+     regression test was checked by disabling the fix and watching it fail.
+  4. **The first request after an import gave actively wrong advice**: the
+     table name is `CHANGE_ME`, and pulse said "add a table named CHANGE_ME
+     to pulse.yaml". Now: "an environment variable in .env hasn't been filled
+     in yet". `config.Placeholder` is the one shared constant, plus a
+     `pulse start` warning line and a `pulse doctor` check so it's caught
+     before the failure.
+  5. **A typo'd function name** produced raw SDK prose ("https response error
+     StatusCode: 404") and advised checking connectivity, which was fine.
+     Now: `no Lambda function named "createOrderr" in eu-west-1 · did you mean
+     "createOrder"?` (`config.DidYouMean` exported, `awscfg.IsNotFound`).
+  6. **`--profile` with a name that doesn't exist** prompted for a *region*
+     before failing. Validated up front against the discovered profiles, with
+     a suggestion.
+  Cosmetic: a small bundle showed "0 KB" (now "865 bytes").
+  **Not our bug, but expect red CI:** the node e2e currently fails because the
+  newest `@aws-sdk/client-dynamodb` publish requires `@aws-sdk/types@^3.974.3`
+  while the registry only has `3.974.2` — a partially-propagated AWS release.
+  Verified by pinning 3.970.0, where the golden path passes end to end
+  (request → queue → worker → 🎉). It will clear itself upstream.
+- **P6 — verification** (1–2 days): a live run against a real account
+  (needs his test Lambda + the credentials decision); recorded fixtures.
+  The offline half is done — see P5.5.
 - **P7 — website**: quickstart gains an "import from AWS" path, FAQ
   gains "Can I run my existing Lambda locally?", both /vs pages gain the
   row (neither competitor imports live functions).
