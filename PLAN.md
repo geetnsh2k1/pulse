@@ -1191,6 +1191,17 @@ evidence and confirmed by the user.
   - Also fixed: the e2e test hand-registered flags and had already drifted
     (missing `--policy`); `addImportFlags` is now shared by the command and
     the test, the same pattern `addAWSFlags` uses.
+  - **Gap found while auditing P5 against itself, then closed**: the taxonomy
+    only covered failures that *stop* the import. The `degrade()` path — the
+    place a locked-down account most often meets AccessDenied — still relayed
+    raw SDK prose, truncated mid-token: *"not readable (ListRolePolicies,
+    https response error StatusCode: 403, RequestID: , api error A…)"*. All
+    six degrade sites now go through `whyUnreadable()`, which names the
+    permission and points at `--policy`, and `shortErr` prefers the API error
+    code and clips at a word boundary. These notes are copied into
+    IMPORT-NOTES.md, so the old text was useless twice over. Reads:
+    *"execution role policy — no permission for iam:ListRolePolicies (see
+    `pulse import aws --policy`) · resource guesses rely on env vars alone"*.
 - **P6 — verification** (1–2 days): unit tests on stubbed responses;
   recorded fixtures; a live run against a real account; e2e extension for
   the offline paths.

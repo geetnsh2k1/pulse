@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -19,6 +20,9 @@ import (
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/smithy-go"
+
+	"github.com/geetnsh2k1/pulse/internal/awscfg"
 )
 
 // The narrow slice of each AWS API discovery uses. Interfaces rather than
@@ -180,7 +184,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		defer wg.Done()
 		sources, err := d.eventSources(ctx, name)
 		if err != nil {
-			d.degrade("event source mappings", "couldn't be read ("+shortErr(err)+") — queue triggers may be missing")
+			d.degrade("event source mappings", whyUnreadable(err)+" · queue triggers may be missing")
 			return
 		}
 		out.EventSources = sources
@@ -190,7 +194,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		defer wg.Done()
 		routes, err := d.routes(ctx, fn)
 		if err != nil {
-			d.degrade("http routes", "couldn't be read ("+shortErr(err)+") — add routes by hand after importing")
+			d.degrade("http routes", whyUnreadable(err)+" · add routes by hand after importing")
 			return
 		}
 		out.Routes = routes
@@ -200,7 +204,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		defer wg.Done()
 		names, err := d.queueNames(ctx)
 		if err != nil {
-			d.degrade("queue list", "couldn't be read ("+shortErr(err)+") — the queue picker will be empty")
+			d.degrade("queue list", whyUnreadable(err)+" · the queue picker will be empty")
 			return
 		}
 		out.AllQueues = names
@@ -210,7 +214,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		defer wg.Done()
 		names, err := d.tableNames(ctx)
 		if err != nil {
-			d.degrade("table list", "couldn't be read ("+shortErr(err)+") — the table picker will be empty")
+			d.degrade("table list", whyUnreadable(err)+" · the table picker will be empty")
 			return
 		}
 		out.AllTables = names
@@ -222,7 +226,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 	// likely to be denied — plenty of orgs lock IAM down. Optional by design.
 	if fn.RoleARN != "" && d.IAM != nil {
 		if stmts, err := d.rolePolicy(ctx, fn.RoleARN); err != nil {
-			d.degrade("execution role policy", "not readable ("+shortErr(err)+") — resource guesses rely on env vars alone")
+			d.degrade("execution role policy", whyUnreadable(err)+" · resource guesses rely on env vars alone")
 		} else {
 			out.RolePolicy = stmts
 		}
@@ -239,7 +243,7 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		qName := arnTail(es.ARN)
 		full, err := d.DescribeQueue(ctx, qName)
 		if err != nil {
-			d.degrade("queue "+qName, "attributes not readable ("+shortErr(err)+") — defaults applied locally")
+			d.degrade("queue "+qName, whyUnreadable(err)+" · defaults applied locally")
 			continue
 		}
 		out.AllQueues = mergeQueue(out.AllQueues, full)
@@ -732,15 +736,47 @@ func mergeRoutes(a, b []HTTPRoute) []HTTPRoute {
 
 // shortErr keeps degradation notes readable: the SDK's full message names
 // operations and request IDs nobody reading a summary needs.
+// whyUnreadable explains a read that didn't happen, as the first clause of a
+// note whose second clause is the consequence. A refused permission is the
+// common case in a real organization and the only one with an exact answer, so
+// it never gets buried in SDK prose — these notes are copied into
+// IMPORT-NOTES.md, where "api error A…" would be useless twice over.
+func whyUnreadable(err error) string {
+	if action := awscfg.DeniedPermission(err); action != "" {
+		return "no permission for " + action + " (see `pulse import aws --policy`)"
+	}
+	return "couldn't be read: " + shortErr(err)
+}
+
 func shortErr(err error) string {
+	// An API error already carries the two things worth saying; the rest of
+	// the SDK's message is request IDs and protocol detail.
+	var api smithy.APIError
+	if errors.As(err, &api) {
+		code := api.ErrorCode()
+		if msg := strings.TrimSpace(api.ErrorMessage()); msg != "" && msg != code {
+			return code + ": " + clip(msg, 90)
+		}
+		return code
+	}
 	s := err.Error()
 	if i := strings.Index(s, ": "); i > 0 && i < 40 {
 		s = s[i+2:]
 	}
-	if len(s) > 80 {
-		s = s[:80] + "…"
+	return clip(strings.TrimSpace(s), 90)
+}
+
+// clip trims at a word boundary — a message cut mid-token ("api error A…")
+// reads like a bug in pulse rather than a long message.
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return strings.TrimSpace(s)
+	cut := s[:max]
+	if i := strings.LastIndexAny(cut, " ,;:"); i > max/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:") + "…"
 }
 
 func atoiOr(s string, def int) int {

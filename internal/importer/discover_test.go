@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/smithy-go"
 )
 
 // ---- fakes: every AWS response is scripted, nothing reaches the network ----
@@ -290,6 +291,79 @@ func TestDiscoverDegradesInsteadOfFailing(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("degradation should mention %q, got: %s", want, joined)
 		}
+	}
+}
+
+// deniedAPIError and plainAPIError stand in for what the SDK hands back, so
+// these tests need no network and no credentials.
+type deniedAPIError struct{}
+
+func (deniedAPIError) Error() string                 { return "api error AccessDeniedException" }
+func (deniedAPIError) ErrorCode() string             { return "AccessDeniedException" }
+func (deniedAPIError) ErrorMessage() string          { return "User is not authorized to perform this action" }
+func (deniedAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }
+
+type plainAPIError struct{ code, msg string }
+
+func (e *plainAPIError) Error() string                 { return e.code + ": " + e.msg }
+func (e *plainAPIError) ErrorCode() string             { return e.code }
+func (e *plainAPIError) ErrorMessage() string          { return e.msg }
+func (e *plainAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }
+
+// A degraded read is where most people actually meet AccessDenied, and these
+// notes are copied into IMPORT-NOTES.md — so they have to name the missing
+// permission, not relay SDK prose.
+func TestDegradedNotesNameTheMissingPermission(t *testing.T) {
+	d := discovererFixture()
+	denied := &smithy.OperationError{
+		ServiceID: "IAM", OperationName: "ListRolePolicies",
+		Err: &deniedAPIError{},
+	}
+	d.IAM.(*fakeIAM).errs["ListRolePolicies"] = denied
+
+	if _, err := d.Discover(context.Background(), "createOrder"); err != nil {
+		t.Fatalf("a denied optional read must not fail the import: %v", err)
+	}
+	note := notesText(d.Degraded)
+	if !strings.Contains(note, "iam:ListRolePolicies") {
+		t.Errorf("note should name the permission, got: %s", note)
+	}
+	if !strings.Contains(note, "--policy") {
+		t.Errorf("note should say how to get it, got: %s", note)
+	}
+	// The consequence still has to be there — that's why the note exists.
+	if !strings.Contains(note, "env vars alone") {
+		t.Errorf("note should say what it costs, got: %s", note)
+	}
+	if strings.Contains(note, "https response error") || strings.Contains(note, "RequestID") {
+		t.Errorf("note is relaying SDK internals: %s", note)
+	}
+}
+
+// A failure that isn't about permissions still has to read like a sentence.
+func TestShortErrKeepsMessagesReadable(t *testing.T) {
+	long := &smithy.OperationError{ServiceID: "DynamoDB", OperationName: "DescribeTable",
+		Err: &plainAPIError{code: "ValidationException",
+			msg: "The provided key element does not match the schema and this message keeps going well past what fits on one line"}}
+	got := shortErr(long)
+	if !strings.HasPrefix(got, "ValidationException: ") {
+		t.Errorf("the API error code is the most useful part, got %q", got)
+	}
+	if len(got) > 115 {
+		t.Errorf("message too long for a note (%d chars): %q", len(got), got)
+	}
+	// Cut at a word boundary — "api error A…" reads like a pulse bug.
+	if strings.HasSuffix(got, "…") {
+		trimmed := strings.TrimSuffix(got, "…")
+		if strings.HasSuffix(trimmed, " ") || strings.HasSuffix(trimmed, ",") {
+			t.Errorf("clipped mid-punctuation: %q", got)
+		}
+		if last := trimmed[strings.LastIndex(trimmed, " ")+1:]; len(last) < 3 {
+			t.Errorf("clipped mid-word (%q): %q", last, got)
+		}
+	}
+	if plain := shortErr(errors.New("operation error DynamoDB: DescribeTable, something broke")); plain == "" {
+		t.Error("a non-API error must still say something")
 	}
 }
 

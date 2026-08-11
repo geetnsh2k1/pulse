@@ -192,7 +192,7 @@ func Explain(err error, o Options) error {
 			// guess what to ask their admin for; "not allowed to call
 			// lambda:GetFunction" is a request they can paste.
 			what := "do this"
-			if action := DeniedAction(err); action != "" {
+			if action := DeniedPermission(err); action != "" {
 				what = "call " + action
 			}
 			return &Error{Cause: "access denied", Err: err,
@@ -250,11 +250,24 @@ func Explain(err error, o Options) error {
 		Fix: "run `pulse aws whoami --profile " + p + "` to test connectivity on its own"}
 }
 
-// DeniedAction reports the IAM action an AccessDenied was refused for, or ""
-// when the SDK didn't say. The SDK wraps every failure in an OperationError
-// that knows the service and operation — the only translation needed is into
-// IAM's own naming.
-func DeniedAction(err error) string {
+// DeniedPermission reports the IAM action an error was refused for, or "" if
+// the error isn't a permission problem at all. The SDK wraps every failure in
+// an OperationError that knows the service and operation, so the only
+// translation needed is into IAM's own naming.
+//
+// Exported because callers that *tolerate* a denial need this too: the
+// importer degrades when an optional read is refused, and "you don't have
+// iam:ListRolePolicies" is the only version of that note worth reading.
+func DeniedPermission(err error) string {
+	var api smithy.APIError
+	if !errors.As(err, &api) {
+		return ""
+	}
+	switch api.ErrorCode() {
+	case "AccessDenied", "AccessDeniedException", "UnauthorizedOperation":
+	default:
+		return ""
+	}
 	var op *smithy.OperationError
 	if !errors.As(err, &op) {
 		return ""
