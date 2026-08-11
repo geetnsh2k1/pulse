@@ -137,7 +137,10 @@ func awsCheck() check {
 		if len(names) > 4 {
 			names = append(names[:4], "…")
 		}
-		return check{ok: true, line: fmt.Sprintf("aws profiles — %d found (%s)", len(profiles), strings.Join(names, ", "))}
+		// Naming the command here is the point: this is the one machine state
+		// where `pulse import aws` is immediately usable.
+		return check{ok: true, line: fmt.Sprintf("aws profiles — %d found (%s) · `pulse import aws` can read them",
+			len(profiles), strings.Join(names, ", "))}
 	}
 }
 

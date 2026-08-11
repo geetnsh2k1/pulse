@@ -25,6 +25,7 @@ var (
 	flagImportDryRun   bool
 	flagImportYes      bool
 	flagImportValues   bool
+	flagImportPolicy   bool
 )
 
 var importCmd = &cobra.Command{
@@ -56,19 +57,27 @@ beside the project. Nothing is dropped silently.`,
 	Example: `  pulse import aws                          pick a profile, region and function
   pulse import aws createOrder              import that function
   pulse import aws createOrder --dry-run    show the plan, write nothing
-  pulse import aws createOrder --profile prod --region eu-west-1 --yes`,
+  pulse import aws createOrder --profile prod --region eu-west-1 --yes
+  pulse import aws --policy                 print the read-only IAM policy it needs`,
 	ValidArgsFunction: cobra.NoFileCompletions,
 	RunE:              runImportAWS,
 }
 
-func init() {
-	addAWSFlags(importAWSCmd)
-	f := importAWSCmd.Flags()
+// addImportFlags is shared with the tests, so a flag can never exist on the
+// real command but be missing from the one a test drives.
+func addImportFlags(c *cobra.Command) {
+	addAWSFlags(c)
+	f := c.Flags()
 	f.StringVar(&flagImportFunction, "function", "", "Lambda function to import (same as the positional argument)")
 	f.StringVar(&flagImportName, "name", "", "project name and directory to create (default: the function's name)")
 	f.BoolVar(&flagImportDryRun, "dry-run", false, "show the plan and the pulse.yaml it would write, then stop")
 	f.BoolVar(&flagImportYes, "yes", false, "skip prompts: take the pre-checked defaults (for scripts and CI)")
 	f.BoolVar(&flagImportValues, "with-values", false, "copy real environment values into .env (they may be secrets)")
+	f.BoolVar(&flagImportPolicy, "policy", false, "print the minimal read-only IAM policy import needs, then exit")
+}
+
+func init() {
+	addImportFlags(importAWSCmd)
 	importCmd.AddCommand(importAWSCmd)
 }
 
@@ -79,6 +88,15 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	}
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
+
+	// --policy is a document, not a call. It runs before anything touches
+	// credentials on purpose: the moment you need it most is when AccessDenied
+	// just stopped you, or when you're asking an admin for access you don't
+	// have yet.
+	if flagImportPolicy {
+		printReadPolicy(out)
+		return nil
+	}
 
 	fnName := flagImportFunction
 	if len(args) == 1 {
@@ -228,6 +246,41 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 		ui.Dim(fmt.Sprintf("— %s · %d files", plan.Summary(), len(written.Files))))
 	printImportNextSteps(out, plan, dest, written)
 	return nil
+}
+
+// printReadPolicy prints the permissions import needs, in the two forms
+// people actually need them: prose to justify the request, and a JSON document
+// to paste into IAM. Every line of it is a read.
+//
+// Redirected to a file or a pipe it prints the document alone, so
+// `pulse import aws --policy > policy.json` is a usable file rather than a
+// screenshot of one.
+func printReadPolicy(out io.Writer) {
+	if !stdoutIsTerminal() {
+		fmt.Fprintln(out, importer.MinimalPolicyJSON())
+		return
+	}
+
+	fmt.Fprintf(out, "\n%s %s\n", ui.AccentBold("⚡ read-only policy for `pulse import aws`"),
+		ui.Dim("— nothing here can change your account"))
+
+	fmt.Fprintf(out, "\n  %s\n", ui.Bold("what it reads, and why"))
+	for _, a := range importer.ReadActions() {
+		note := a.Why
+		if a.Optional {
+			note += " (optional — import degrades without it)"
+		}
+		fmt.Fprintf(out, "    %-32s %s\n", ui.Accent(a.Action), ui.Dim(note))
+	}
+
+	fmt.Fprintf(out, "\n  %s\n\n", ui.Bold("attach this to the identity you import with"))
+	for _, line := range strings.Split(importer.MinimalPolicyJSON(), "\n") {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
+
+	fmt.Fprintf(out, "\n  %s\n", ui.Dim("Resource is \"*\" because List* actions have no resource-level scoping in IAM."))
+	fmt.Fprintf(out, "  %s\n", ui.Dim("Your function's code downloads over a presigned link — no extra S3 permission needed."))
+	fmt.Fprintf(out, "\n%s\n", ui.Hint("check it worked: `pulse aws whoami` then `pulse import aws`"))
 }
 
 // notInsideAProject keeps `pulse import` from creating a project inside a

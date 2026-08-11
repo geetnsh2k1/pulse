@@ -2,6 +2,7 @@ package awscfg
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -46,10 +47,18 @@ type Identity struct {
 	Source string
 }
 
+// maxAttempts is how many times a call is tried before pulse gives up. Every
+// AWS call pulse makes is a read, so retrying is always safe — and throttling
+// is the one failure a user can do nothing about except wait, which the SDK's
+// exponential backoff already does better than a person would.
+const maxAttempts = 5
+
 // Load resolves credentials without calling AWS. Errors here are about
 // local configuration (a profile that doesn't exist, an unreadable file).
 func Load(ctx context.Context, o Options) (aws.Config, error) {
-	var opts []func(*config.LoadOptions) error
+	opts := []func(*config.LoadOptions) error{
+		config.WithRetryMaxAttempts(maxAttempts),
+	}
 	if o.Profile != "" {
 		opts = append(opts, config.WithSharedConfigProfile(o.Profile))
 	}
@@ -179,23 +188,56 @@ func Explain(err error, o Options) error {
 				Msg: "AWS rejected the credentials for " + sourceLabel(o),
 				Fix: credFix(o)}
 		case "AccessDenied", "AccessDeniedException", "UnauthorizedOperation":
+			// Name the exact action. "Not allowed to do this" makes someone
+			// guess what to ask their admin for; "not allowed to call
+			// lambda:GetFunction" is a request they can paste.
+			what := "do this"
+			if action := DeniedAction(err); action != "" {
+				what = "call " + action
+			}
 			return &Error{Cause: "access denied", Err: err,
-				Msg: sourceLabel(o) + " is authenticated but not allowed to do this",
-				Fix: "the identity needs read-only Lambda/SQS/DynamoDB permissions — `pulse import aws --policy` prints the minimal policy"}
-		case "ThrottlingException", "TooManyRequestsException", "Throttling":
+				Msg: sourceLabel(o) + " is authenticated but not allowed to " + what,
+				Fix: "ask for read-only access — `pulse import aws --policy` prints the exact policy to request"}
+		case "ThrottlingException", "TooManyRequestsException", "Throttling",
+			"RequestLimitExceeded", "SlowDown":
 			return &Error{Cause: "throttled", Err: err,
 				Msg: "AWS is throttling these requests",
-				Fix: "wait a moment and run it again — pulse retries automatically inside a run"}
+				Fix: fmt.Sprintf("pulse already retried %d times with backoff — wait a moment and run it again", maxAttempts)}
 		}
 	}
 
-	// Network-shaped failures: distinguish DNS from timeouts, because the
-	// remedies are completely different (VPN/proxy vs. try again).
+	// Network-shaped failures: DNS, proxy, TLS and timeouts all look alike in
+	// the SDK's message and have completely different remedies.
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return &Error{Cause: "dns", Err: err,
 			Msg: "couldn't resolve the AWS endpoint (DNS failure)",
 			Fix: "check your network or VPN; if you use a proxy, set HTTPS_PROXY"}
+	}
+
+	// A proxy that is configured but unreachable — common on a corporate
+	// laptop off the VPN. Name the proxy so it's obvious which one failed.
+	if strings.Contains(s, "proxyconnect") {
+		fix := "check your network or VPN"
+		if p := proxyEnv(); p != "" {
+			fix = fmt.Sprintf("%s is set but not reachable — connect to the VPN, or unset it", p)
+		}
+		return &Error{Cause: "proxy", Err: err,
+			Msg: "couldn't reach AWS through the configured proxy", Fix: fix}
+	}
+
+	// TLS interception: an inspecting proxy re-signs traffic with a corporate
+	// CA the Go runtime doesn't trust. Nothing about the credentials is wrong,
+	// which is why this one is so confusing without a name for it.
+	var unknownCA x509.UnknownAuthorityError
+	var badCert x509.CertificateInvalidError
+	var badHost x509.HostnameError
+	if errors.As(err, &unknownCA) || errors.As(err, &badCert) || errors.As(err, &badHost) ||
+		containsAny(s, "certificate signed by unknown authority", "tls: failed to verify certificate",
+			"x509: certificate") {
+		return &Error{Cause: "tls", Err: err,
+			Msg: "the TLS connection to AWS wasn't trusted — usually a proxy that inspects HTTPS",
+			Fix: "point AWS_CA_BUNDLE at your organization's CA certificate (the aws CLI needs the same thing)"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(s, "context deadline exceeded") || strings.Contains(s, "i/o timeout") {
 		return &Error{Cause: "timeout", Err: err,
@@ -206,6 +248,49 @@ func Explain(err error, o Options) error {
 	return &Error{Cause: "unknown", Err: err,
 		Msg: fmt.Sprintf("AWS call failed for %s: %v", sourceLabel(o), err),
 		Fix: "run `pulse aws whoami --profile " + p + "` to test connectivity on its own"}
+}
+
+// DeniedAction reports the IAM action an AccessDenied was refused for, or ""
+// when the SDK didn't say. The SDK wraps every failure in an OperationError
+// that knows the service and operation — the only translation needed is into
+// IAM's own naming.
+func DeniedAction(err error) string {
+	var op *smithy.OperationError
+	if !errors.As(err, &op) {
+		return ""
+	}
+	return IAMAction(op.Service(), op.Operation())
+}
+
+// IAMAction turns an SDK service + operation into the IAM action string a
+// policy has to grant — "Lambda"/"GetFunction" → "lambda:GetFunction".
+//
+// API Gateway is the exception worth encoding: its v2 API is authorized with
+// HTTP verbs (apigateway:GET), not operation names, so anyone told they need
+// "apigateway:GetApis" would search the IAM reference and come up empty.
+func IAMAction(service, operation string) string {
+	svc := strings.ToLower(strings.ReplaceAll(service, " ", ""))
+	switch svc {
+	case "apigatewayv2", "apigateway":
+		return "apigateway:GET"
+	case "":
+		return ""
+	}
+	if operation == "" {
+		return ""
+	}
+	return svc + ":" + operation
+}
+
+// proxyEnv names the proxy variable actually in play, so the fix can point at
+// the right one instead of listing all four.
+func proxyEnv() string {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := os.Getenv(k); v != "" {
+			return k + "=" + v
+		}
+	}
+	return ""
 }
 
 // profileLabel names the profile in play, mirroring the SDK's own fallback

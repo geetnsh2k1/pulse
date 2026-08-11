@@ -1152,9 +1152,45 @@ evidence and confirmed by the user.
     settled on new-project-only for v1).
   - **Binary: 30.6 MB stripped, 9.4 MB gzipped** — see the correction in
     §12.7. Within the "~30 MB is acceptable" decision from §12.6.
-- **P5 — errors + docs** (1–1.5 days): the taxonomy in 12.5, the
-  minimal read-only IAM policy printed on AccessDenied, GUIDE section,
-  `pulse doctor` awareness.
+- **P5 (errors + docs) — DONE 2026-08-12.** The §12.5 table is now closed,
+  and the docs describe a feature that exists.
+  - **`pulse import aws --policy`** — P4 shipped an AccessDenied message that
+    pointed at this flag before it existed, which is the kind of dangling
+    promise that makes a tool feel unfinished. It now prints every action
+    with the reason pulse needs it, then a pasteable IAM document. It runs
+    *before* credentials are touched, because the moment you need it is the
+    moment you don't have access; and redirected to a file it prints the JSON
+    alone, so `pulse import aws --policy > p.json` is usable input for
+    `aws iam create-policy`.
+  - **The policy can't drift from the code.** `policy_test.go` reflects over
+    the five API interfaces in discover.go and fails both ways: an API that
+    is callable but ungranted, and an action granted but never called. A
+    third test parses the document and rejects any wildcard or any verb that
+    could mutate — the read-only promise enforced on the artifact, not just
+    in prose.
+  - **AccessDenied names the exact action.** `smithy.OperationError` carries
+    the service and operation, so the message is now "not allowed to call
+    `lambda:GetFunction`" — a request you can paste. `awscfg.IAMAction`
+    special-cases API Gateway v2, which authorizes by HTTP verb
+    (`apigateway:GET`), so nobody goes hunting for `apigateway:GetApis` in
+    the IAM reference.
+  - **Two new network causes**: an unreachable proxy (names the actual
+    `HTTPS_PROXY` value that's set) and TLS interception (`x509` errors →
+    AWS_CA_BUNDLE), which previously both landed in "unknown" or "timeout"
+    with useless advice.
+  - **Throttling tells the truth**: retries raised to 5 attempts
+    (`awscfg.maxAttempts`, safe because every call is a read) and the message
+    quotes that number — with a test asserting the message matches the
+    constant, so the claim can't rot.
+  - **Docs**: GUIDE §3.13 "Already deployed? — `pulse import aws`" (placed
+    after `.env` and add/remove so nothing it mentions is untaught, per the
+    no-forward-references rule), a signpost in §1, cheat-sheet rows,
+    §9 corrected (import exists, export doesn't). README gained an "Already
+    deployed? Import it" section after the quickstart. `pulse doctor` now
+    names the command on the line where it's actually usable.
+  - Also fixed: the e2e test hand-registered flags and had already drifted
+    (missing `--policy`); `addImportFlags` is now shared by the command and
+    the test, the same pattern `addAWSFlags` uses.
 - **P6 — verification** (1–2 days): unit tests on stubbed responses;
   recorded fixtures; a live run against a real account; e2e extension for
   the offline paths.

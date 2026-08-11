@@ -27,6 +27,9 @@ import (
 //
 // Every method here is a read. There is deliberately no write anywhere in
 // the importer.
+//
+// Adding a method here also adds a permission the user needs: ReadActions in
+// policy.go must grant it, and policy_test.go fails until it does.
 type (
 	LambdaAPI interface {
 		GetFunction(context.Context, *lambda.GetFunctionInput, ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error)

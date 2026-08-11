@@ -24,6 +24,10 @@ right after shows what you should see — treat those as **checkpoints**.
 
 ## 1. Start here
 
+Already have a Lambda deployed in AWS? `pulse import aws` builds the project
+from it — see [§3.13](#313-already-deployed--pulse-import-aws). Otherwise
+start below; the guide teaches the pieces the import output refers to.
+
 ### The guided way (recommended, 5 minutes)
 
 ```bash
@@ -640,6 +644,97 @@ another queue's dead-letter target refuses removal until you rewire it.
 - Hand-editing `pulse.yaml` works exactly as well; `add`/`remove` are just
   the shortcuts.
 
+### 3.13 Already deployed? — `pulse import aws`
+
+Everything so far started from `pulse init`. If the function you care about
+is already running in AWS, pulse can read it and build the project for you:
+
+```bash
+pulse import aws                 # asks: which profile, which region, which function
+pulse import aws createOrder     # or name it outright
+```
+
+pulse uses the same credentials the `aws` CLI does — your profiles,
+`AWS_PROFILE`, environment variables, an instance role, whatever you already
+have. It prints the account before it reads anything, so you always know
+whose account is in play.
+
+**It only ever reads.** Import calls `List*`, `Get*` and `Describe*` and
+nothing else: no AWS API that creates, changes or deletes is reachable from
+this command. Running it cannot affect production.
+
+What arrives, and how sure pulse is about each piece:
+
+| Piece | Where it comes from | Certainty |
+|---|---|---|
+| runtime, handler, timeout, memory | the function's own configuration | fact |
+| your handler code | the deployment package, unzipped into `functions/<name>/` | fact |
+| `POST /orders` style routes | the function's resource policy, cross-checked with API Gateway | fact |
+| queue triggers, batch size | its event source mappings | fact |
+| a queue's visibility timeout and DLQ | `GetQueueAttributes` on the real queue | fact |
+| a table's partition and sort keys | `DescribeTable` on the real table | fact |
+| **which tables/queues your code uses** | the execution role's policy, environment variable values, then a scan of your code | **a guess you confirm** |
+
+That last row is the one to understand. AWS records what *triggers* a
+function, but nothing anywhere records that your code calls DynamoDB at
+runtime — that fact lives only in your code. So pulse proposes the resources
+it found evidence for, shows you the evidence, and lets you tick them off:
+
+```
+? include these? (checked ones have strong evidence)
+    [x] 1. orders     table · env ORDERS_TABLE + iam policy
+    [ ] 2. audit-log  table · name appears in the code
+  toggle 1-2 · all · none · Enter accepts ›
+```
+
+Two independent signals (or one deliberate one, like an environment variable
+holding the name) arrive pre-checked. Enter accepts what's shown. Everything
+you tick is then read from AWS properly, so a table lands in `pulse.yaml`
+with the same keys it has in production — not an approximation.
+
+**Your environment values do not travel by default.** Lambda variables
+routinely hold live API keys, so pulse writes the *names* to `.env` with
+`CHANGE_ME` for every value:
+
+```bash
+pulse import aws createOrder --with-values   # opt in, if you really want the real ones
+```
+
+Four files come with the project: `pulse.yaml`, `.env` (gitignored, as in
+§3.11), `.env.example`, and **`IMPORT-NOTES.md`** — the honest record of
+everything AWS has that pulse can't represent. Layers, VPC configuration,
+provisioned concurrency, secondary indexes, S3/SNS/EventBridge triggers: each
+is printed on screen *and* written to that file, so the gap lives in your
+repo instead of in a terminal that scrolls away. Read it first; the layer
+warning in particular explains why an import may be missing dependencies.
+
+Useful flags:
+
+```bash
+pulse import aws createOrder --dry-run    # show the plan and the pulse.yaml, write nothing
+pulse import aws createOrder --yes        # no prompts: take the pre-checked defaults (CI)
+pulse import aws --name shop-api          # choose the project name and directory
+pulse import aws --policy                 # print the read-only IAM policy this needs
+```
+
+`--policy` is the answer to an `AccessDenied`. It needs no credentials at
+all, lists every action with the reason pulse needs it, and prints a policy
+document you can hand to whoever administers the account — redirect it and
+it's a file:
+
+```bash
+pulse import aws --policy > pulse-read-only.json
+```
+
+Limits, all of which refuse loudly rather than importing something broken:
+zip-packaged functions only (not container images), Node 18+ and Python
+3.10+, deployment packages under 250 MB, and one function per import into a
+**new** directory — pulse will not write into an existing project.
+
+Afterwards it's an ordinary pulse project: `pulse start`, edit, replay,
+`pulse add` more pieces. Your handler code is untouched, still plain AWS SDK
+code that runs the same in real AWS.
+
 ---
 
 ## 4. Inspect
@@ -929,6 +1024,8 @@ An app with no queues or tables simply omits `resources` entirely.
 | `pulse tour` | Hands-on 5-minute walkthrough of the whole loop |
 | `pulse init` | New project — no arguments asks three quick questions |
 | `pulse init <name> [-t tpl] [--lang node\|python]` | Same, fully scripted (CI-safe) |
+| `pulse import aws [fn]` | Build a project from a deployed Lambda (read-only) — §3.13 |
+| `pulse aws profiles` / `pulse aws whoami` | Which AWS accounts pulse can see / which one it would read |
 | `pulse start [--port N]` / `pulse stop` | Local cloud on / off |
 | `pulse add function\|route\|queue\|table …` | Scaffold pieces, applied live (bare = wizard) |
 | `pulse remove …` | The inverse — unwire pieces; code and data stay |
@@ -974,8 +1071,8 @@ First stop: `pulse doctor` — it checks the usual suspects and prints fixes.
 
 ## 9. What pulse doesn't do yet
 
-- **Phase 6 (next):** installers (Homebrew) and versioned releases, cloud
-  sync from a real AWS account, project sharing, Windows support.
+- **Next:** two-way sync with a real AWS account (import exists — §3.13 —
+  export doesn't yet), project sharing, Windows support.
 - **Backlog:** SNS, S3 + bucket events, DynamoDB streams/indexes/transactions,
   EventBridge, Step Functions, Go/Java/.NET runtimes, IAM enforcement.
 

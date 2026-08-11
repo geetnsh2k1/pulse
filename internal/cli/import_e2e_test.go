@@ -38,8 +38,10 @@ type fakeAWS struct {
 	calls []string
 	// noIAM makes the role read fail, exercising graceful degradation.
 	noIAM bool
-	code  []byte
-	host  string
+	// denyGetFunction makes the one mandatory read fail with AccessDenied.
+	denyGetFunction bool
+	code            []byte
+	host            string
 }
 
 func (f *fakeAWS) log(op string) {
@@ -92,6 +94,14 @@ func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}})
 	case r.URL.Path == "/2015-03-31/functions/createOrder":
 		f.log("GetFunction")
+		if f.denyGetFunction {
+			// How Lambda actually reports a denial: 403 plus the error type in
+			// a header, which is what the SDK reads.
+			w.Header().Set("X-Amzn-Errortype", "AccessDeniedException")
+			w.WriteHeader(http.StatusForbidden)
+			f.json(w, map[string]any{"message": "User is not authorized to perform: lambda:GetFunction"})
+			return
+		}
 		f.json(w, map[string]any{
 			"Configuration": lambdaConfig(),
 			"Code":          map[string]any{"Location": f.codeURL(), "RepositoryType": "S3"},
@@ -323,12 +333,7 @@ func runImport(t *testing.T, answers string, args ...string) (string, string, er
 	cmd.SetIn(strings.NewReader(answers))
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
-	addAWSFlags(cmd)
-	cmd.Flags().StringVar(&flagImportFunction, "function", "", "")
-	cmd.Flags().StringVar(&flagImportName, "name", "", "")
-	cmd.Flags().BoolVar(&flagImportDryRun, "dry-run", false, "")
-	cmd.Flags().BoolVar(&flagImportYes, "yes", false, "")
-	cmd.Flags().BoolVar(&flagImportValues, "with-values", false, "")
+	addImportFlags(cmd) // the same registration the real command uses
 	if err := cmd.ParseFlags(args); err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +347,7 @@ func resetImportFlags(t *testing.T) {
 	t.Helper()
 	awsProfile, awsRegion = "", ""
 	flagImportFunction, flagImportName = "", ""
-	flagImportDryRun, flagImportYes, flagImportValues = false, false, false
+	flagImportDryRun, flagImportYes, flagImportValues, flagImportPolicy = false, false, false, false
 }
 
 func TestImportAWSGoldenPath(t *testing.T) {
@@ -611,4 +616,60 @@ func readFile(t *testing.T, dir, name string) string {
 		t.Fatalf("reading %s: %v", name, err)
 	}
 	return string(body)
+}
+
+// The permissions story, end to end: a denial on the one mandatory read must
+// name the exact IAM action and point at the flag that prints the policy.
+func TestImportAWSAccessDeniedNamesTheActionAndThePolicy(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	fake := startFakeAWS(t)
+	fake.denyGetFunction = true
+
+	screen, dir, err := runImport(t, "", "--function", "createOrder", "--yes")
+	if err == nil {
+		t.Fatalf("an AccessDenied on GetFunction must fail the import\n%s", screen)
+	}
+	if !strings.Contains(err.Error(), "lambda:GetFunction") {
+		t.Errorf("error should name the refused action, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--policy") {
+		t.Errorf("error should point at the policy printer, got: %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("a failed import must write nothing, found %v", entries)
+	}
+}
+
+// --policy is what someone runs BECAUSE they have no access yet, so it must
+// not need credentials, a region, or a profile.
+func TestImportAWSPolicyWorksWithoutCredentials(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	dir := t.TempDir()
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
+	for _, k := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+		"AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ENDPOINT_URL"} {
+		t.Setenv(k, "")
+	}
+
+	screen, _, err := runImport(t, "", "--policy")
+	if err != nil {
+		t.Fatalf("--policy must work with no AWS setup at all: %v", err)
+	}
+	for _, want := range []string{
+		"lambda:GetFunction", "dynamodb:DescribeTable", "sts:GetCallerIdentity",
+		"PulseImportReadOnly", "read-only",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("policy output missing %q:\n%s", want, screen)
+		}
+	}
+	// Every action carries its reason — that is what makes it a request an
+	// admin can approve rather than a wall of strings.
+	if !strings.Contains(screen, "confirm which account") {
+		t.Errorf("the why column is missing:\n%s", screen)
+	}
+	if strings.Contains(screen, "\"Action\": \"*\"") {
+		t.Error("the policy must not contain a wildcard action")
+	}
 }

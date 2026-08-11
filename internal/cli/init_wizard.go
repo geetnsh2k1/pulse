@@ -33,6 +33,16 @@ func stdinIsInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
+// stdoutIsTerminal answers a different question from stdinIsInteractive: not
+// "can I ask?" but "is a human reading this?". Output that will be redirected
+// into a file should be the data alone, with none of the framing.
+func stdoutIsTerminal() bool {
+	if os.Getenv("PULSE_ASSUME_TTY") == "1" {
+		return true
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
 // initWizard collects name/template/lang, mutating the same flag globals the
 // flag path uses, and returns the project name. Reads from cmd.InOrStdin()
 // so tests can feed answers.

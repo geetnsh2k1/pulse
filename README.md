@@ -103,6 +103,36 @@ That round trip was an API, a queue, a worker with retries, and a database —
 all local, all real SDK calls. `init` installed the dependencies; nothing to
 activate or configure.
 
+## Already deployed? Import it
+
+If your app is already in AWS, you don't start from a template:
+
+```bash
+pulse import aws                 # asks which profile, region and function
+pulse import aws createOrder     # or name it
+```
+
+pulse reads the function's configuration, its API Gateway routes and SQS
+triggers, the queues and tables it appears to use, and your real handler
+code — then writes a project you can `pulse start`. It uses the same
+credentials the `aws` CLI does, and prints the account before reading
+anything.
+
+**Read-only, always.** Import calls only `List*`, `Get*` and `Describe*` —
+no mutating AWS API is reachable from the command, so it cannot affect
+production. Environment *values* are not copied unless you pass
+`--with-values`; every value lands in `.env` as `CHANGE_ME`. Anything AWS
+has that pulse can't represent — layers, VPC config, secondary indexes,
+S3/SNS/EventBridge triggers — is printed and written to `IMPORT-NOTES.md`
+beside the project. Nothing is dropped silently.
+
+```bash
+pulse import aws createOrder --dry-run   # show the plan, write nothing
+pulse import aws --policy                # the read-only IAM policy it needs
+```
+
+Details and limits in [the guide](docs/GUIDE.md#313-already-deployed--pulse-import-aws).
+
 ## What you get
 
 - **A sub-second inner loop.** Engine ready in ~100ms, warm invokes in
@@ -117,7 +147,8 @@ activate or configure.
 - **A live dashboard.** `pulse monitor` — functions with ✓/✗ counts, live
   queue depths, streaming filtered logs, and Enter-to-replay history.
 - **A CLI that teaches.** Run any command bare and it asks instead of
-  erroring. Errors ship their fix. `pulse doctor` checks your setup.
+  erroring. Errors ship their fix — an `AccessDenied` names the exact IAM
+  action and prints the policy to request. `pulse doctor` checks your setup.
   Tab completion knows *your* functions and queues.
 - **Honesty by design.** pulse does one workflow completely — CRUD +
   background jobs. Everything outside the subset fails loudly with a

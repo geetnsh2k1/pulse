@@ -2,7 +2,9 @@ package awscfg
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -79,6 +81,86 @@ func TestExplainProfileNotFoundListsWhatExists(t *testing.T) {
 	}
 	if !strings.Contains(pe.Msg, "typo") {
 		t.Errorf("message should name the bad profile, got %q", pe.Msg)
+	}
+}
+
+// AccessDenied is the failure a real organization actually hits, and "you
+// aren't allowed to do this" leaves the user guessing what to request. The
+// SDK always knows which call was refused.
+func TestExplainNamesTheDeniedAction(t *testing.T) {
+	denied := &smithy.OperationError{
+		ServiceID:     "Lambda",
+		OperationName: "GetFunction",
+		Err:           apiError{"AccessDeniedException"},
+	}
+	got := Explain(denied, Options{Profile: "prod"})
+	var pe *Error
+	if !errors.As(got, &pe) {
+		t.Fatalf("want *awscfg.Error, got %T", got)
+	}
+	if pe.Cause != "access denied" {
+		t.Fatalf("cause = %q", pe.Cause)
+	}
+	if !strings.Contains(pe.Msg, "lambda:GetFunction") {
+		t.Errorf("message should name the exact IAM action, got %q", pe.Msg)
+	}
+	if !strings.Contains(pe.Fix, "--policy") {
+		t.Errorf("fix should point at the policy printer, got %q", pe.Fix)
+	}
+
+	// API Gateway authorizes by HTTP verb, so the operation name would send
+	// someone hunting for an IAM action that doesn't exist.
+	apigw := &smithy.OperationError{
+		ServiceID: "API Gateway V2", OperationName: "GetApis", Err: apiError{"AccessDeniedException"},
+	}
+	if err := Explain(apigw, Options{Profile: "prod"}); !strings.Contains(err.Error(), "apigateway:GET") {
+		t.Errorf("API Gateway denial should name apigateway:GET, got %q", err)
+	}
+
+	// Without an operation to name, the message must still read cleanly.
+	plain := Explain(apiError{"AccessDenied"}, Options{Profile: "prod"})
+	if !strings.Contains(plain.Error(), "not allowed to do this") {
+		t.Errorf("bare denial reads badly: %q", plain)
+	}
+}
+
+// A TLS-inspecting proxy and an unreachable proxy both look like generic
+// network noise in the SDK's message, and neither remedy resembles the other.
+func TestExplainSeparatesProxyAndTLSFailures(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+	proxy := Explain(errors.New(`Get "https://sts.amazonaws.com/": proxyconnect tcp: dial tcp: connection refused`),
+		Options{Profile: "prod"})
+	var pe *Error
+	if !errors.As(proxy, &pe) || pe.Cause != "proxy" {
+		t.Fatalf("proxy failure classified as %v", proxy)
+	}
+	if !strings.Contains(pe.Fix, "HTTPS_PROXY=http://corp-proxy:3128") {
+		t.Errorf("fix should name the proxy actually set, got %q", pe.Fix)
+	}
+
+	for _, err := range []error{
+		x509.UnknownAuthorityError{},
+		errors.New(`tls: failed to verify certificate: x509: certificate signed by unknown authority`),
+	} {
+		got := Explain(err, Options{Profile: "prod"})
+		if !errors.As(got, &pe) || pe.Cause != "tls" {
+			t.Errorf("TLS interception classified as %v", got)
+			continue
+		}
+		if !strings.Contains(pe.Fix, "AWS_CA_BUNDLE") {
+			t.Errorf("fix should name AWS_CA_BUNDLE, got %q", pe.Fix)
+		}
+	}
+}
+
+// The throttling message promises pulse already retried — it must not lie.
+func TestThrottlingMessageMatchesTheRealRetryCount(t *testing.T) {
+	got := Explain(apiError{"ThrottlingException"}, Options{Profile: "prod"})
+	if !strings.Contains(got.Error(), fmt.Sprintf("retried %d times", maxAttempts)) {
+		t.Errorf("message should state the real attempt count (%d), got %q", maxAttempts, got)
+	}
+	if maxAttempts < 2 {
+		t.Error("claiming retries requires more than one attempt")
 	}
 }
 
