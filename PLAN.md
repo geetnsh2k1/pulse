@@ -1250,12 +1250,64 @@ evidence and confirmed by the user.
   while the registry only has `3.974.2` — a partially-propagated AWS release.
   Verified by pinning 3.970.0, where the golden path passes end to end
   (request → queue → worker → 🎉). It will clear itself upstream.
-- **P6 — verification** (1–2 days): a live run against a real account
-  (needs his test Lambda + the credentials decision); recorded fixtures.
-  The offline half is done — see P5.5.
-- **P7 — website**: quickstart gains an "import from AWS" path, FAQ
-  gains "Can I run my existing Lambda locally?", both /vs pages gain the
-  row (neither competitor imports live functions).
+- **P5.6 — UX polish from the acceptance run** (~half a day, NOT started).
+  Four things the real-terminal run made obvious, ranked by how often a user
+  would meet them. Each is small and independent; ordered so the first two
+  can ship alone. **Awaiting his pick — do not start unasked.**
+  1. **`--dry-run` shouldn't ask anything.** It currently runs the guess
+     checklist, so "just show me the plan" turns into a conversation. Make
+     `--dry-run` imply the pre-checked defaults (same as `--yes`), and say so
+     in the flag help. Smallest change, removes a papercut on the flag people
+     reach for first.
+  2. **Finish the job: install dependencies after a successful import.**
+     `pulse init` already does this (`installDeps`, `--no-install` to skip);
+     import only *prints* the command. The wrinkle import adds: the code lives
+     in `functions/<name>/`, while the python runner wants `.venv` at the
+     project ROOT — so this is not a straight reuse of `installDeps`, it needs
+     a root venv installing from the function's requirements.txt. Skip
+     entirely when the bundle already vendors its dependencies (the common
+     case for a real Lambda zip). Add `--no-install` for parity. Turns four
+     printed steps into one command to a running app.
+  3. **Region miss should help, not stop.** The region comes only from the
+     profile (or `--region`/`AWS_REGION`), so a function in another region
+     reads as "no Lambda function named X" — technically true, unhelpful. On a
+     not-found, offer to look in a couple of likely regions (the profile's
+     neighbours + the account's most-used), or at minimum print
+     `try --region <other>` with real candidates rather than a generic hint.
+     Costs one ListFunctions per region probed, on the error path only.
+  4. **Keep IMPORT-NOTES.md alive past day one.** It records what AWS has that
+     pulse doesn't, and nothing mentions it again after the import. `pulse
+     doctor` should note that the file exists while it's still in the project
+     ("IMPORT-NOTES.md present — N caveats from the import"), so the gap stays
+     visible when a mismatch actually confuses someone weeks later.
+- **P6 — live verification** (1–2 days, NEXT, blocked on him):
+  - He supplies a real Lambda — ideally with an SQS trigger and a DynamoDB
+    table, so the live run covers the same ground the fake did (§12.8).
+  - **Credentials: DECIDED 2026-08-12** — he provides credentials and I may
+    run the read-only calls myself, with a standing rule: **confirm before
+    anything that adds, removes or modifies** (in AWS or in his repo). Import
+    is read-only by construction, so the live run itself needs no such
+    confirmation; the rule governs everything around it.
+  - What the live run must prove beyond the fake: real AWS pagination
+    (accounts with >50 functions), real presigned S3 download, real
+    API Gateway shapes (REST v1 *and* HTTP v2), a real KMS-encrypted
+    environment, real throttling behaviour, and an SSO profile end to end.
+  - Then: recorded fixtures from that run, so the paths stay tested offline
+    forever without needing the account again.
+- **P7 — website coupling** (~half a day, after P6 proves it works):
+  - Quickstart splits "new project | already deployed in AWS".
+  - New FAQ entry: "Can I run my existing Lambda locally?"
+  - Both `/vs` pages gain the import row — neither competitor imports live
+    functions, so it's a genuine differentiator, stated once and honestly.
+  - **The size claim must change in the same pass**: `app/page.tsx` compare
+    table + the Docker FAQ answer, `/vs/localstack` (×2), `/vs/sam-local`.
+    "One 20 MB binary" is false at 30.6 MB (§12.7). README already reworded.
+  - `public/version.json` bump belongs to the release, not this phase.
+- **P8 — export (the other direction)** — DEFERRED, not scoped. His original
+  framing was "import first, then export". Nothing here is designed yet;
+  when it comes up, the honest scope question is whether pulse emits SAM/CDK
+  artifacts or stops at "your code is already vanilla SDK, deploy it with
+  whatever you use". Deliberately left open.
 
 ### 12.5 Error taxonomy (every failure names its fix)
 
@@ -1332,9 +1384,15 @@ after measuring — P2 re-adds config+sts as it actually uses them.
 - **Live target**: Geetansh will provide a real Lambda (ideally with an
   SQS trigger + DynamoDB table) *after* the feature is built — so P0–P5
   proceed against stubs and fixtures, and P6 waits for it.
-- **Credentials boundary**: deliberately undecided; we settle it together
-  when P6 starts. Until then no pulse code and no session touches a real
-  AWS account.
+- **Credentials boundary — SETTLED 2026-08-12.** He provides credentials and
+  Claude may run the read-only calls itself. Standing rule he attached:
+  **confirm with him before anything that adds, removes or modifies** —
+  in AWS or in his repo. Import is read-only by construction, so the live
+  run needs no per-call confirmation; the rule covers everything around it
+  (creating a test function, deleting a project, changing account settings).
+  Until the credentials actually arrive, the old boundary still applies: no
+  session touches a real account. Everything through P5 was verified without
+  one (§12.4 P5.5), which is why this decision costs nothing in rework.
 
 ### 12.9 Guessing policy + project mode — DECIDED (2026-08-09)
 
@@ -1392,3 +1450,50 @@ from AWS.
 
 Extra read permissions this needs (added to the printed policy):
 `dynamodb:ListTables`, `sqs:ListQueues`.
+
+---
+
+## 13. Where we are / what's left (board, updated 2026-08-12)
+
+One place to see the whole picture. Two tracks run in parallel: the **import
+epic** (§12, current focus, on branch `feat/import-aws`) and the **post-launch
+roadmap** (§11). `master` stays at the last released state and receives nothing
+until a feature is stable end to end.
+
+### Import epic — §12
+
+| Phase | State | Notes |
+|---|---|---|
+| P0 SDK spike | ✅ done | size measured; §12.7 correction: 30.6 MB, not 18.6 |
+| P1 `.env` in core | ✅ done | + 2 real bugs fixed |
+| P2 profile foundation | ✅ done | `pulse aws profiles/whoami`, full credential chain |
+| P3 mapper + discovery | ✅ done | SDK-free mapper, 5 read-only interfaces, all fakes |
+| P4 the CLI | ✅ done | atomic writer, pickers, preview, offline e2e; 3 bugs fixed |
+| P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
+| P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
+| **P5.6 UX polish** | ⏸ awaiting his pick | 4 items, ranked, none blocking |
+| **P6 live verification** | ⏭ NEXT, blocked on him | needs his test Lambda; credentials now settled |
+| P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
+| P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
+
+Then: merge `feat/import-aws` into master with `--no-ff`, tag v0.2.0, bump
+`public/version.json` on the site (the update notifier reads it).
+
+### Post-launch roadmap — §11
+
+| Phase | State | Notes |
+|---|---|---|
+| L0 launch-week kit | ✅ mostly done | GIF, notifier, repo public, domain live; **testimonials still placeholders** |
+| L1 first-run hardening | 🟡 partly done | e2e + CI matrix + doctor fixes shipped; **still open:** Linux containers, fresh-machine drill, WSL2 smoke test, website runtime matrix |
+| L2 `pulse import` | 🟡 in progress | §12 IS L2, scoped up from SAM-template parsing to reading live AWS |
+| L3 service surface | ⬜ not started | demand-driven: S3 subset → EventBridge schedules → SNS |
+| L4 docs on getpulse.run | ⬜ not started | `/docs` from the GUIDE, per-feature pages, first blog post |
+| §10 Windows native | 🅿️ parked | WSL2 is the documented answer for now |
+
+### His side, outstanding
+- The **test Lambda + credentials** for P6 (say when — I'll ask).
+- **Testimonials** on the site: real quotes, or leave `SHOW_TESTIMONIALS=false`.
+- The PR for `feat/import-aws` (he's managing it) — note CI only runs on
+  master pushes and PRs, so the branch gets the matrix once a PR is open.
+- Heads-up, not his fault: the node e2e currently fails on a broken upstream
+  `@aws-sdk/client-dynamodb` publish (§12.4 P5.5). It will clear itself.
