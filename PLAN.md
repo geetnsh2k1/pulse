@@ -1046,9 +1046,57 @@ evidence and confirmed by the user.
   binary with SDK linked: **17.4 MB** stripped (still under the 20 MB
   claim; P0 predicted 18.6 MB for all seven clients — only config+sts are
   linked so far).
-- **P3 — discovery + mapping** (3–4 days): `internal/importer` — pure
-  functions from AWS shapes to an `ImportPlan{items, provenance,
-  unsupported}`. No I/O in the mapper → fully unit-testable.
+- **P3 (mapper half) — DONE 2026-08-11.** `internal/importer` is SDK-free
+  and does no I/O, so the risky decisions are testable without credentials:
+  `types.go` (neutral discovered shapes + Plan/Guess/Note/Refusal),
+  `plan.go` (`BuildPlan` + `InferResources`), `render.go` (`ToConfig`,
+  `.env`/`.env.example`, `IMPORT-NOTES.md`, `Summary`). 31 test cases.
+  Highlights:
+  - **Refusals** name the function and the fix: container images,
+    non-Node/Python runtimes, >250 MB bundles, missing handler.
+  - **Facts vs guesses**: routes and event-source mappings are Confirmed;
+    resources are inferred from env values that match a real resource
+    name, IAM grants naming a specific ARN (wildcards and Denies ignored),
+    and finally a word-boundary code scan. Two signals — or one deliberate
+    one (env/IAM) — make a guess *strong* (pre-checked); a code-only
+    mention stays weak. Names that don't exist in the account are never
+    proposed, so a plan can't reference something undescribable.
+  - **Nothing silent**: ANY routes expand to five methods *with a note*,
+    disabled mappings, filter criteria, FIFO, layers, VPC, reserved
+    concurrency, secondary indexes and streams all produce Warnings or
+    Unsupported notes that land in IMPORT-NOTES.md beside the project.
+  - **Correct by construction**: `ToConfig()` builds the same struct
+    pulse.yaml parses into and is run through `config.Validate()` before
+    anything is written; out-of-range timeouts/memory are clamped; a
+    referenced DLQ is always created locally so retries have somewhere to
+    land; secrets never enter pulse.yaml (values go to `.env`,
+    placeholdered unless `--with-values`, and the generated file is
+    round-trip parsed by `internal/dotenv` in tests).
+- **P3 (discovery half) — DONE 2026-08-11.** `discover.go`: five narrow
+  read-only interfaces (Lambda/SQS/Dynamo/APIGateway/IAM) so every test
+  runs on fakes — nothing in the package can reach the network. 43 cases
+  total. Decisions worth keeping:
+  - **Only the function is mandatory.** Event-source mappings, routes,
+    queue/table lists and the IAM role are read concurrently and each
+    *degrades* on AccessDenied into a `Degraded` note rather than failing
+    the import. A locked-down account still gets a usable project, and is
+    told exactly what was lost.
+  - **Speed**: the four independent reads run in parallel — six serial AWS
+    round trips is a visible wait.
+  - **No N+1**: `ListTables`/`ListQueues` give names for the picker;
+    `DescribeTable`/`DescribeQueue` run only for what is confirmed or
+    selected, so an account with 200 tables costs two calls, not 200.
+  - **Routes**: the Lambda resource policy is the cheap precise source
+    (apiId/stage/METHOD/path straight out of `AWS:SourceArn`); wildcarded
+    methods/paths are rejected rather than guessed, and an API Gateway walk
+    (matching integration URIs on a word boundary) is the fallback.
+  - `ListFunctions` marks each function importable or not **with the
+    reason**, so the picker leads with what pulse can actually run.
+  - KMS-encrypted environments are flagged: the values readable there are
+    ciphertext, not what the function sees.
+  Note: the shipped binary is still 17.4 MB because nothing in `cmd/pulse`
+  references the importer yet — the linker drops the service clients until
+  P4 wires the command, at which point P0's 18.6 MB measurement applies.
 - **P4 — CLI** (2–3 days): interactive `pulse import aws` (profile →
   region → function picker with trigger badges → resource confirmation →
   preview → write) and scriptable `--function X --profile Y --yes`.
