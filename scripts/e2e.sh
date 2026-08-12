@@ -166,6 +166,18 @@ case "$out" in
   *) fail "doctor output unrecognized" "$out" ;;
 esac
 
+# ------------------------------------------------------- import (offline)
+# `pulse import aws --policy` is a document, not a call: no credentials, no
+# network. Asserting it here gives the read-only policy printer real-binary
+# coverage on every OS in the matrix, which unit tests can't do.
+out=$("$PULSE" import aws --policy 2>&1) || fail "import aws --policy exited non-zero" "$out"
+assert "import --policy prints the read-only policy" "$out" "PulseImportReadOnly"
+assert "import --policy names a read action" "$out" "lambda:GetFunction"
+case "$out" in
+  *Delete*|*PutItem*|*CreateFunction*) fail "the printed policy contains a mutating action" "$out" ;;
+  *) ok "import --policy stays read-only" ;;
+esac
+
 # ---------------------------------------------------------------- stop
 out=$("$PULSE" stop 2>&1) || fail "stop exited non-zero" "$out"
 assert "engine stopped cleanly" "$out" "stopped"

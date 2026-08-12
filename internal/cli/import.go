@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/spf13/cobra"
 
 	"github.com/geetnsh2k1/pulse/internal/awscfg"
@@ -19,12 +21,13 @@ import (
 )
 
 var (
-	flagImportFunction string
-	flagImportName     string
-	flagImportDryRun   bool
-	flagImportYes      bool
-	flagImportValues   bool
-	flagImportPolicy   bool
+	flagImportFunction  string
+	flagImportName      string
+	flagImportDryRun    bool
+	flagImportYes       bool
+	flagImportValues    bool
+	flagImportPolicy    bool
+	flagImportNoInstall bool
 )
 
 var importCmd = &cobra.Command{
@@ -69,10 +72,11 @@ func addImportFlags(c *cobra.Command) {
 	f := c.Flags()
 	f.StringVar(&flagImportFunction, "function", "", "Lambda function to import (same as the positional argument)")
 	f.StringVar(&flagImportName, "name", "", "project name and directory to create (default: the function's name)")
-	f.BoolVar(&flagImportDryRun, "dry-run", false, "show the plan and the pulse.yaml it would write, then stop")
+	f.BoolVar(&flagImportDryRun, "dry-run", false, "show the plan and the pulse.yaml it would write, then stop (asks nothing)")
 	f.BoolVar(&flagImportYes, "yes", false, "skip prompts: take the pre-checked defaults (for scripts and CI)")
 	f.BoolVar(&flagImportValues, "with-values", false, "copy real environment values into .env (they may be secrets)")
 	f.BoolVar(&flagImportPolicy, "policy", false, "print the minimal read-only IAM policy import needs, then exit")
+	f.BoolVar(&flagImportNoInstall, "no-install", false, "don't install the function's dependencies after importing")
 }
 
 func init() {
@@ -152,7 +156,7 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	d, err := disco.Discover(ctx, fnName)
 	if err != nil {
 		sp.Fail("couldn't read the function")
-		return explainMissingFunction(ctx, disco, opts, fnName, id.Region, err)
+		return explainMissingFunction(ctx, disco, awsCfg, opts, fnName, id.Region, err)
 	}
 	sp.Success()
 
@@ -190,7 +194,11 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	// Facts are in. Now the inferred resources: proposed with evidence,
 	// confirmed by the user, then described exactly so the local project
 	// mirrors production field-for-field rather than by guesswork.
-	picked, err := confirmGuesses(in, out, plan.Guesses, flagImportYes)
+	//
+	// --dry-run takes the defaults rather than asking: "show me what you would
+	// do" should not turn into a conversation, and the preview then reflects
+	// exactly what a --yes run would write.
+	picked, err := confirmGuesses(in, out, plan.Guesses, flagImportYes || flagImportDryRun)
 	if err != nil {
 		return err
 	}
@@ -243,7 +251,14 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "\n%s imported %s %s\n", ui.OK("✓"), ui.Bold(plan.Project),
 		ui.Dim(fmt.Sprintf("— %s · %d files", plan.Summary(), len(written.Files))))
-	printImportNextSteps(out, plan, dest, written)
+
+	// Install what the function needs, the way `pulse init` does, so the next
+	// step is `pulse start` and not a copy-paste chore.
+	installed := false
+	if step := dependencyStep(written); step != nil && !flagImportNoInstall {
+		installed = installImportedDeps(out, dest, step)
+	}
+	printImportNextSteps(out, plan, dest, written, installed)
 	return nil
 }
 
@@ -255,12 +270,24 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 // One extra ListFunctions buys a "did you mean" and the real list. It's the
 // error path, the user is already stuck, and if that read is denied too the
 // message simply stays shorter.
-func explainMissingFunction(ctx context.Context, disco *importer.Discoverer,
+func explainMissingFunction(ctx context.Context, disco *importer.Discoverer, awsCfg aws.Config,
 	opts awscfg.Options, fnName, region string, err error) error {
 
 	if !awscfg.IsNotFound(err) {
 		return awscfg.Explain(err, opts)
 	}
+
+	// The right name in the wrong region is as common as a typo, and the user
+	// has no way to tell the two apart from "not found". Look before advising.
+	if elsewhere := importer.FindRegion(ctx, awsCfg, fnName, otherRegions(region)); elsewhere != "" {
+		return &awscfg.Error{
+			Cause: "wrong region",
+			Err:   err,
+			Msg:   fmt.Sprintf("%q isn't in %s — it's in %s", fnName, region, elsewhere),
+			Fix:   fmt.Sprintf("pulse import aws %s --region %s", fnName, elsewhere),
+		}
+	}
+
 	fix := "run `pulse import aws` with no name to pick from the list, or try another --region"
 	if list, lerr := disco.ListFunctions(ctx); lerr == nil && len(list) > 0 {
 		names := make([]string, 0, len(list))
@@ -279,6 +306,20 @@ func explainMissingFunction(ctx context.Context, disco *importer.Discoverer,
 		Msg:   fmt.Sprintf("no Lambda function named %q in %s", fnName, region),
 		Fix:   fix,
 	}
+}
+
+// otherRegions is where to look when a function isn't where we were told.
+// The shortlist people actually deploy to, minus the one already tried —
+// bounded on purpose: probing all 30-odd AWS regions to answer an error would
+// cost more than it teaches.
+func otherRegions(tried string) []string {
+	out := make([]string, 0, len(commonRegions))
+	for _, r := range commonRegions {
+		if r != tried {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // printReadPolicy prints the permissions import needs, in the two forms
@@ -407,27 +448,36 @@ func mustWD() string {
 	return wd
 }
 
-func printImportNextSteps(out io.Writer, plan *importer.Plan, dest string, written *importer.Written) {
+func printImportNextSteps(out io.Writer, plan *importer.Plan, dest string, written *importer.Written, installed bool) {
 	fmt.Fprintf(out, "\n%s\n", ui.AccentBold("next steps"))
 	fmt.Fprintf(out, "  %s\n", ui.Accent("cd "+strings.TrimPrefix(dest, "."+string(filepath.Separator))))
 	if !flagImportValues && countEnv(plan) > 0 {
 		fmt.Fprintf(out, "  %s %s\n", ui.Accent("edit .env"),
 			ui.Dim(fmt.Sprintf("— %d value(s) are CHANGE_ME", countEnv(plan))))
 	}
-	if cmd, why := dependencyStep(plan, written); cmd != "" {
-		fmt.Fprintf(out, "  %s %s\n", ui.Accent(cmd), ui.Dim("— "+why))
+	if step := dependencyStep(written); step != nil && !installed {
+		fmt.Fprintf(out, "  %s %s\n", ui.Accent(step.manual), ui.Dim("— "+step.why))
 	}
 	fmt.Fprintf(out, "  %s\n", ui.Accent("pulse start"))
 	fmt.Fprintf(out, "\n%s\n", ui.Hint("read IMPORT-NOTES.md first — it lists what AWS has that pulse doesn't"))
 }
 
-// dependencyStep reads what actually landed on disk rather than guessing from
-// the runtime. A Lambda zip usually vendors its dependencies, in which case
-// there is nothing to install and saying otherwise would be noise; a bundle
-// that only carries a manifest needs one precise command.
-func dependencyStep(_ *importer.Plan, written *importer.Written) (cmd, why string) {
+// depStep is the one dependency command an imported project needs, derived
+// from what actually landed on disk rather than guessed from the runtime.
+type depStep struct {
+	lang   string // python | node
+	dir    string // the function's directory, relative to the project root
+	manual string // the command to print when pulse doesn't run it
+	why    string
+}
+
+// dependencyStep decides what installing would mean here. A real Lambda zip
+// usually vendors its dependencies, in which case there is nothing to do and
+// suggesting otherwise would be noise; a bundle carrying only a manifest needs
+// exactly one command.
+func dependencyStep(written *importer.Written) *depStep {
 	if written == nil {
-		return "", ""
+		return nil
 	}
 	vendored := false
 	manifests := map[string]string{}
@@ -443,19 +493,81 @@ func dependencyStep(_ *importer.Plan, written *importer.Written) (cmd, why strin
 		}
 	}
 	if vendored {
-		return "", "" // the package brought its own dependencies
+		return nil // the package brought its own dependencies
 	}
 	if dir, ok := manifests["node"]; ok {
-		return "npm install --prefix " + dir, "the package ships only a manifest"
+		return &depStep{lang: "node", dir: dir,
+			manual: "npm install --prefix " + dir,
+			why:    "the package ships only a manifest"}
 	}
 	if dir, ok := manifests["python"]; ok {
-		// The runner prefers the project's own .venv, so create that one.
-		return fmt.Sprintf("python3 -m venv .venv && .venv/bin/pip install -r %s/requirements.txt", dir),
-			"pulse runs python functions from the project's .venv"
+		// The worker resolves .venv at the PROJECT root, while imported code
+		// lives in functions/<name>/ — so the venv and the requirements file
+		// are deliberately in different places here.
+		return &depStep{lang: "python", dir: dir,
+			manual: fmt.Sprintf("python3 -m venv .venv && .venv/bin/pip install -r %s/requirements.txt", dir),
+			why:    "pulse runs python functions from the project's .venv"}
 	}
 	// No manifest and nothing vendored: the dependencies lived in a layer, and
 	// the plan's caveats already say so.
-	return "", ""
+	return nil
+}
+
+// installImportedDeps finishes the job. `pulse init` already installs what it
+// scaffolds; an import that stops at printing four commands is the same work
+// left to the user. Failure is never fatal — the project is valid either way,
+// so a broken network downgrades to the manual command.
+func installImportedDeps(out io.Writer, root string, s *depStep) bool {
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs // exec resolves relative binaries against cmd.Dir
+	}
+	switch s.lang {
+	case "node":
+		if _, err := exec.LookPath("npm"); err != nil {
+			return false
+		}
+		sp := ui.StartSpinner("installing npm dependencies")
+		c := exec.Command("npm", "install", "--no-fund", "--no-audit", "--prefix", s.dir)
+		c.Dir = root
+		if o, err := c.CombinedOutput(); err != nil {
+			sp.Fail("didn't finish")
+			fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+			return false
+		}
+		sp.Success()
+		return true
+
+	case "python":
+		py := ""
+		for _, c := range []string{"python3.12", "python3", "python"} {
+			if p, err := exec.LookPath(c); err == nil {
+				py = p
+				break
+			}
+		}
+		if py == "" {
+			return false
+		}
+		sp := ui.StartSpinner("creating .venv and installing python dependencies")
+		venv := exec.Command(py, "-m", "venv", ".venv")
+		venv.Dir = root
+		if o, err := venv.CombinedOutput(); err != nil {
+			sp.Fail("didn't finish")
+			fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+			return false
+		}
+		pip := exec.Command(filepath.Join(root, ".venv", "bin", "python"), "-m", "pip",
+			"install", "-q", "-r", filepath.Join(s.dir, "requirements.txt"))
+		pip.Dir = root
+		if o, err := pip.CombinedOutput(); err != nil {
+			sp.Fail("didn't finish")
+			fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+			return false
+		}
+		sp.Success()
+		return true
+	}
+	return false
 }
 
 func countEnv(plan *importer.Plan) int {

@@ -708,13 +708,28 @@ is printed on screen *and* written to that file, so the gap lives in your
 repo instead of in a terminal that scrolls away. Read it first; the layer
 warning in particular explains why an import may be missing dependencies.
 
+pulse then installs the function's dependencies the same way `pulse init`
+does — a root `.venv` for Python, `npm install` for Node — so the next step is
+`pulse start` and not a copy-paste chore. Deployment packages usually ship
+their dependencies already, in which case there is nothing to install and
+pulse says nothing. `--no-install` skips it and prints the command instead.
+
 Useful flags:
 
 ```bash
-pulse import aws createOrder --dry-run    # show the plan and the pulse.yaml, write nothing
+pulse import aws createOrder --dry-run    # show the plan and the pulse.yaml, write nothing (asks nothing)
 pulse import aws createOrder --yes        # no prompts: take the pre-checked defaults (CI)
 pulse import aws --name shop-api          # choose the project name and directory
+pulse import aws --no-install             # don't install dependencies
 pulse import aws --policy                 # print the read-only IAM policy this needs
+```
+
+Got the region wrong? pulse looks for the same name in the regions people
+actually deploy to and tells you where it found it:
+
+```
+✗ "createOrder" isn't in us-east-1 — it's in eu-west-1
+    fix: pulse import aws createOrder --region eu-west-1
 ```
 
 `--policy` is the answer to an `AccessDenied`. It needs no credentials at

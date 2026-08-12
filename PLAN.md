@@ -1250,10 +1250,11 @@ evidence and confirmed by the user.
   while the registry only has `3.974.2` — a partially-propagated AWS release.
   Verified by pinning 3.970.0, where the golden path passes end to end
   (request → queue → worker → 🎉). It will clear itself upstream.
-- **P5.6 — UX polish from the acceptance run** (~half a day, NOT started).
+- **P5.6 — UX polish from the acceptance run — DONE 2026-08-12** (all four,
+  his call: "start with 1,2,3,4 in this cut"). Each verified in a real
+  terminal against the standalone fake, not just in tests.
   Four things the real-terminal run made obvious, ranked by how often a user
-  would meet them. Each is small and independent; ordered so the first two
-  can ship alone. **Awaiting his pick — do not start unasked.**
+  would meet them. What shipped, and what changed while building it:
   1. **`--dry-run` shouldn't ask anything.** It currently runs the guess
      checklist, so "just show me the plan" turns into a conversation. Make
      `--dry-run` imply the pre-checked defaults (same as `--yes`), and say so
@@ -1280,6 +1281,25 @@ evidence and confirmed by the user.
      doctor` should note that the file exists while it's still in the project
      ("IMPORT-NOTES.md present — N caveats from the import"), so the gap stays
      visible when a mismatch actually confuses someone weeks later.
+
+  **Notes from doing it:**
+  - #2 landed as `installImportedDeps`, deliberately NOT a reuse of init's
+     `installDeps`: the venv belongs at the project ROOT (where the worker
+     resolves it) while `requirements.txt` sits in `functions/<name>/`. Tests
+     assert both — that `.venv` exists at the root and that it was NOT created
+     beside the code, which is the mistake a naive reuse would make.
+  - #3 probes with **GetFunction, not ListFunctions**: one exact lookup per
+     region instead of paging every function, needing no extra permission.
+     Concurrent, 6s cap, shortlist only, error path only, and it returns
+     candidate order so the answer is deterministic. `importer.FindRegion`.
+  - Both fakes (the Go test one and `scratchpad/fakeaws`) are now
+     **region-aware**, reading the region out of the SigV4 credential scope in
+     the Authorization header. Without that, "it's in another region" could not
+     be tested at all — the fakes answered for every region.
+  - `scripts/e2e.sh` gained 3 assertions (20 total): `import aws --policy`
+     prints the policy, names a read action, and contains no mutating verb.
+     It needs no credentials, so this is real-binary coverage on every OS in
+     the CI matrix.
 - **P6 — live verification** (1–2 days, NEXT, blocked on him):
   - He supplies a real Lambda — ideally with an SQS trigger and a DynamoDB
     table, so the live run covers the same ground the fake did (§12.8).
@@ -1471,8 +1491,8 @@ until a feature is stable end to end.
 | P4 the CLI | ✅ done | atomic writer, pickers, preview, offline e2e; 3 bugs fixed |
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
-| **P5.6 UX polish** | ⏸ awaiting his pick | 4 items, ranked, none blocking |
-| **P6 live verification** | ⏭ NEXT, blocked on him | needs his test Lambda; credentials now settled |
+| P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
+| **P6 live verification** | ⏭ NEXT, blocked on him | needs his test Lambda; credentials settled — he'll provide, I confirm before any add/remove |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 

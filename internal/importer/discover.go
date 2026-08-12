@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
@@ -160,6 +161,43 @@ func (d *Discoverer) ListFunctions(ctx context.Context) ([]FunctionSummary, erro
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// FindRegion looks for the same function name in other regions and returns
+// the first candidate that has it, or "".
+//
+// This exists because "no function named X" is technically true and unhelpful
+// when the real answer is "it's in us-east-1". GetFunction is the right probe:
+// one exact lookup per region rather than paging every function, and it needs
+// no permission the import doesn't already have. Runs on the error path only,
+// concurrently, and gives up quietly.
+func FindRegion(ctx context.Context, cfg aws.Config, fnName string, candidates []string) string {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	found := make([]string, len(candidates))
+	var wg sync.WaitGroup
+	for i, region := range candidates {
+		wg.Add(1)
+		go func(i int, region string) {
+			defer wg.Done()
+			client := lambda.NewFromConfig(cfg, func(o *lambda.Options) { o.Region = region })
+			if _, err := client.GetFunction(ctx, &lambda.GetFunctionInput{
+				FunctionName: aws.String(fnName),
+			}); err == nil {
+				found[i] = region
+			}
+		}(i, region)
+	}
+	wg.Wait()
+
+	// Candidate order, not completion order, so the answer is deterministic.
+	for _, r := range found {
+		if r != "" {
+			return r
+		}
+	}
+	return ""
 }
 
 // Discover reads everything needed to plan one function. The independent

@@ -75,6 +75,15 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 			line: fmt.Sprintf("no %s (optional — put local secrets there, not in pulse.yaml)", config.DotEnvFile)})
 	}
 
+	// An imported project carries a list of what AWS has that pulse doesn't.
+	// Nothing mentions it again after the import, and the day it matters is
+	// weeks later when local behaviour differs from production.
+	if n, ok := importNotes(cfg.Root); ok {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("IMPORT-NOTES.md present — %s from the import", countLabel(n, "caveat", "caveats")),
+			fix:  ""})
+	}
+
 	checks = append(checks, awsCheck())
 	checks = append(checks, runtimeChecks(cfg)...)
 	checks = append(checks, depChecks(cfg)...)
@@ -150,6 +159,31 @@ func awsCheck() check {
 		return check{ok: true, line: fmt.Sprintf("aws profiles — %d found (%s) · `pulse import aws` can read them",
 			len(profiles), strings.Join(names, ", "))}
 	}
+}
+
+// importNotes counts the caveats an import recorded, so doctor can mention the
+// file without re-reading it aloud. Bullets are the "- **subject**: detail"
+// lines render.go writes.
+func importNotes(root string) (int, bool) {
+	body, err := os.ReadFile(filepath.Join(root, "IMPORT-NOTES.md"))
+	if err != nil {
+		return 0, false
+	}
+	n := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "- **") {
+			n++
+		}
+	}
+	return n, true
+}
+
+// countLabel is "1 caveat" / "3 caveats" — doctor lines read as sentences.
+func countLabel(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // runEnvDoctor answers "is this machine ready for pulse?" — everything that

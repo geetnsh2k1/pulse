@@ -126,6 +126,9 @@ has that pulse can't represent — layers, VPC config, secondary indexes,
 S3/SNS/EventBridge triggers — is printed and written to `IMPORT-NOTES.md`
 beside the project. Nothing is dropped silently.
 
+It finishes the job, too: dependencies are installed the way `pulse init`
+installs them, so the next step is `pulse start`.
+
 ```bash
 pulse import aws createOrder --dry-run   # show the plan, write nothing
 pulse import aws --policy                # the read-only IAM policy it needs

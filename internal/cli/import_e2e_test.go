@@ -94,6 +94,13 @@ func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}})
 	case r.URL.Path == "/2015-03-31/functions/createOrder":
 		f.log("GetFunction")
+		if reg := regionOf(r); reg != "" && reg != homeRegion {
+			// Right name, wrong region — the case the probe exists for.
+			w.Header().Set("X-Amzn-Errortype", "ResourceNotFoundException")
+			w.WriteHeader(http.StatusNotFound)
+			f.json(w, map[string]any{"message": "Function not found in " + reg})
+			return
+		}
 		if f.denyGetFunction {
 			// How Lambda actually reports a denial: 403 plus the error type in
 			// a header, which is what the SDK reads.
@@ -153,6 +160,27 @@ func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeAWS) codeURL() string { return "http://" + f.host + "/code.zip" }
+
+// homeRegion is where the fake's function actually lives. Requests signed for
+// any other region get a 404, which is what AWS does — and what makes the
+// "it's in another region" probe testable.
+const homeRegion = "eu-west-1"
+
+// regionOf reads the region out of the SigV4 credential scope:
+//
+//	Authorization: AWS4-HMAC-SHA256 Credential=AKIA/20260812/eu-west-1/lambda/aws4_request, ...
+func regionOf(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	i := strings.Index(auth, "Credential=")
+	if i < 0 {
+		return ""
+	}
+	parts := strings.Split(auth[i+len("Credential="):], "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[2]
+}
 
 func (f *fakeAWS) json(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -304,7 +332,7 @@ func handlerZip(t *testing.T) []byte {
 			"orders = ddb.Table(os.environ['ORDERS_TABLE'])\n" +
 			"audit = ddb.Table('audit-log')\n" +
 			"def handler(event, context):\n    return {'statusCode': 201}\n",
-		"requirements.txt": "boto3\n",
+		"requirements.txt": "", // empty: pip has nothing to fetch, so the test stays offline
 	}
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -727,5 +755,113 @@ func TestImportAWSUnknownProfileFailsBeforeAnyQuestion(t *testing.T) {
 	}
 	if strings.Contains(screen, "which region?") {
 		t.Errorf("asked for a region for a profile that doesn't exist:\n%s", screen)
+	}
+}
+
+// --dry-run means "show me what you'd do", so it must not turn into a
+// conversation: it takes the pre-checked defaults like --yes does.
+func TestImportAWSDryRunAsksNothing(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+
+	// Empty stdin: any prompt would fail with "cancelled" rather than hang.
+	screen, dir, err := runImport(t, "", "--function", "createOrder", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run should not need input: %v\n%s", err, screen)
+	}
+	for _, prompt := range []string{"toggle", "(Y/n)"} {
+		if strings.Contains(screen, prompt) {
+			t.Errorf("--dry-run prompted (%q):\n%s", prompt, screen)
+		}
+	}
+	// It still has to show the plan it would write, guesses included.
+	if !strings.Contains(screen, "project: createorder") || !strings.Contains(screen, "orders") {
+		t.Errorf("dry run should still show the full plan:\n%s", screen)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("--dry-run wrote %v", entries)
+	}
+}
+
+// The right name in the wrong region is as common as a typo, and the two are
+// indistinguishable from "not found" unless pulse looks.
+func TestImportAWSFindsTheFunctionInAnotherRegion(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+	// The function lives in eu-west-1 (homeRegion); ask in the wrong one.
+	t.Setenv("AWS_REGION", "us-east-1")
+
+	_, dir, err := runImport(t, "", "--function", "createOrder", "--yes")
+	if err == nil {
+		t.Fatal("want an error when the function isn't in the region asked for")
+	}
+	if !strings.Contains(err.Error(), "isn't in us-east-1") || !strings.Contains(err.Error(), "it's in eu-west-1") {
+		t.Errorf("error should say where it actually is, got: %v", err)
+	}
+	// And the fix must be the command that works.
+	if !strings.Contains(err.Error(), "--region eu-west-1") {
+		t.Errorf("fix should be runnable, got: %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("nothing should be written, found %v", entries)
+	}
+}
+
+// A name that exists nowhere must stay a not-found — the probe must not
+// invent a region.
+func TestImportAWSProbeDoesNotInventARegion(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+
+	_, _, err := runImport(t, "", "--function", "nowhere", "--yes")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), `no Lambda function named "nowhere"`) {
+		t.Errorf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "it's in") {
+		t.Errorf("the probe claimed a region for a function that doesn't exist: %v", err)
+	}
+}
+
+// Dependencies: an imported bundle that ships only a manifest gets installed,
+// the way `pulse init` installs what it scaffolds.
+func TestImportAWSInstallsDependencies(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+
+	screen, dir, err := runImport(t, "", "--function", "createOrder", "--yes")
+	if err != nil {
+		t.Fatalf("import failed: %v\n%s", err, screen)
+	}
+	root := filepath.Join(dir, "createorder")
+	// The fake's package carries requirements.txt, so pulse should have built
+	// the venv at the PROJECT root (where the runner looks), not beside the code.
+	if _, err := os.Stat(filepath.Join(root, ".venv")); err != nil {
+		t.Errorf(".venv should exist at the project root: %v\n%s", err, screen)
+	}
+	if _, err := os.Stat(filepath.Join(root, "functions", "createOrder", ".venv")); err == nil {
+		t.Error(".venv must not be created beside the code — the runner won't find it there")
+	}
+	// Having installed, the manual command is noise.
+	if strings.Contains(screen, "python3 -m venv .venv &&") {
+		t.Errorf("still printing the manual command after installing:\n%s", screen)
+	}
+}
+
+func TestImportAWSNoInstallSkipsAndSaysHow(t *testing.T) {
+	t.Setenv("PULSE_ASSUME_TTY", "1")
+	startFakeAWS(t)
+
+	screen, dir, err := runImport(t, "", "--function", "createOrder", "--yes", "--no-install")
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "createorder", ".venv")); err == nil {
+		t.Error("--no-install still created a venv")
+	}
+	if !strings.Contains(screen, "python3 -m venv .venv &&") {
+		t.Errorf("--no-install must print the command it skipped:\n%s", screen)
 	}
 }
