@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
 )
 
 // callTimeout keeps a wrong profile or an unreachable network from hanging
@@ -58,6 +59,9 @@ const maxAttempts = 5
 func Load(ctx context.Context, o Options) (aws.Config, error) {
 	opts := []func(*config.LoadOptions) error{
 		config.WithRetryMaxAttempts(maxAttempts),
+		// Every client built from this config refuses to issue anything that
+		// isn't on the read-only list, before signing. See readonly.go.
+		config.WithAPIOptions([]func(*middleware.Stack) error{readOnlyGuard}),
 	}
 	if o.Profile != "" {
 		opts = append(opts, config.WithSharedConfigProfile(o.Profile))

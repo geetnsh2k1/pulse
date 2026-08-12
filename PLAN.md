@@ -1394,6 +1394,53 @@ disagree with a decision made against fakes:
 **Cleanup discipline**: everything he creates for a rung is his to delete, and
 I will confirm before touching anything that adds, removes or modifies (§12.8).
 
+### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
+
+He decided to import from the Tartan work account (he has access; a new test
+account was costing him money). Reaffirmed after the risks were laid out, so
+it proceeds — and the honest response to "make sure we won't alter anything"
+is enforcement, not assurance. Five layers, weakest to strongest:
+
+1. **No call site exists.** Grepped: the only concrete SDK clients in the whole
+   codebase are five in `NewDiscoverer`, one `lambda.Client` in `FindRegion`
+   (GetFunction only), and one `sts.Client` in `Whoami` (GetCallerIdentity
+   only).
+2. **The type system narrows them immediately.** `Discoverer` holds its clients
+   as `LambdaAPI`/`SQSAPI`/`DynamoAPI`/`APIGatewayAPI`/`IAMAPI` — 14 read
+   methods total. After construction the code *cannot name* a mutating method:
+   it isn't in the variable's type.
+3. **A runtime guard on the single door** (`awscfg/readonly.go`, added today).
+   Every client built through `awscfg.Load` carries a smithy middleware that
+   refuses any operation outside a 15-name allowlist, at the Initialize step —
+   so a blocked call is never signed, never sent, and never reaches CloudTrail.
+   A future write feature has to add itself deliberately; it cannot arrive by
+   refactor or by a dependency calling something on our behalf. Ten genuinely
+   destructive calls (DeleteFunction, UpdateFunctionCode, PutItem, DeleteTable,
+   SendMessage, PurgeQueue, Invoke, AddPermission, Scan, ReceiveMessage) are
+   asserted blocked, with a test server that fails the test if anything
+   reaches the wire. `dynamodb:Scan` and `sqs:ReceiveMessage` are refused too:
+   they only read, but reading production *data* isn't import's business and
+   consuming a queue is destructive.
+4. **The offline e2e fake** fails the build if any mutating HTTP verb appears.
+5. **IAM, which doesn't require trusting pulse at all.** `pulse import aws
+   --policy` produces a credential that *cannot* mutate even if every layer
+   above were wrong. For the Tartan account this is the layer that matters:
+   use a read-only identity and the question stops depending on my code.
+
+**A claim I tried to make and could not.** I checked whether the mutating
+operations are even compiled into the binary — they are: 173 lambda, 162
+dynamodb, 355 iam, 209 apigatewayv2, 49 sqs operations are all linked, because
+assigning a concrete client into an interface keeps its whole method set
+reachable. So "it physically isn't in the binary" is FALSE and must not be
+said. Layers 2 and 3 are what hold. Recording the refutation so nobody
+re-derives the wrong version of it later.
+
+**Operating rules for the Tartan run** (his account, his call, these are mine
+to honor): read-only identity if one can be had · `--dry-run` first ·
+**never `--with-values`** against a real account · nothing that adds, removes
+or modifies without asking him first (§12.8) · don't commit an imported
+project from a work account anywhere.
+
 ### 12.5 Error taxonomy (every failure names its fix)
 
 | Cause | Message → fix |

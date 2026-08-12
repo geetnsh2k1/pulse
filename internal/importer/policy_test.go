@@ -121,3 +121,25 @@ func TestEveryActionExplainsWhyItIsNeeded(t *testing.T) {
 		}
 	}
 }
+
+// Three lists have to agree or the read-only promise has a hole: the API
+// interfaces (what the code CAN call), the printed IAM policy (what we ask the
+// user to grant), and awscfg's runtime guard (what the SDK will actually let
+// through). This checks the third against the first.
+func TestRuntimeGuardAllowsEveryAPITheImporterCanCall(t *testing.T) {
+	for svc, iface := range map[string]reflect.Type{
+		"lambda":       reflect.TypeOf((*LambdaAPI)(nil)).Elem(),
+		"sqs":          reflect.TypeOf((*SQSAPI)(nil)).Elem(),
+		"dynamodb":     reflect.TypeOf((*DynamoAPI)(nil)).Elem(),
+		"apigatewayv2": reflect.TypeOf((*APIGatewayAPI)(nil)).Elem(),
+		"iam":          reflect.TypeOf((*IAMAPI)(nil)).Elem(),
+	} {
+		for i := 0; i < iface.NumMethod(); i++ {
+			op := iface.Method(i).Name
+			if !awscfg.ReadOnlyOperations[op] {
+				t.Errorf("%s.%s would be blocked at runtime by awscfg's guard — add it to ReadOnlyOperations",
+					svc, op)
+			}
+		}
+	}
+}
