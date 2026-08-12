@@ -3,9 +3,11 @@ package importer
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -388,7 +390,7 @@ func FetchCode(ctx context.Context, client *http.Client, fn, url string) (*CodeP
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("downloading the code for %s: %w", fn, err)
+		return nil, fmt.Errorf("downloading the code for %s: %w", fn, redactURL(err))
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -407,7 +409,7 @@ func FetchCode(ctx context.Context, client *http.Client, fn, url string) (*CodeP
 	switch {
 	case err != nil:
 		os.Remove(tmp.Name())
-		return nil, fmt.Errorf("downloading the code for %s: %w", fn, err)
+		return nil, fmt.Errorf("downloading the code for %s: %w", fn, redactURL(err))
 	case closeErr != nil:
 		os.Remove(tmp.Name())
 		return nil, closeErr
@@ -416,6 +418,23 @@ func FetchCode(ctx context.Context, client *http.Client, fn, url string) (*CodeP
 		return nil, fmt.Errorf("the package for %s exceeds %d MB", fn, maxUnzipped>>20)
 	}
 	return &CodePackage{Function: fn, path: tmp.Name(), size: n}, nil
+}
+
+// redactURL strips the query string out of a network error. AWS hands out a
+// presigned S3 link whose query carries X-Amz-Credential and X-Amz-Signature —
+// short-lived, but still a signed credential, and errors get pasted into bug
+// reports and CI logs. Go's *url.Error embeds the whole URL by default.
+func redactURL(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	shown := ue.URL
+	if u, perr := url.Parse(ue.URL); perr == nil && u.RawQuery != "" {
+		u.RawQuery = ""
+		shown = u.String() + "?<signature redacted>"
+	}
+	return fmt.Errorf("%s %s: %w", ue.Op, shown, ue.Err)
 }
 
 // Close removes the downloaded archive.

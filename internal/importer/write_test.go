@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/geetnsh2k1/pulse/internal/config"
+	"github.com/geetnsh2k1/pulse/internal/dotenv"
 )
 
 // zipOf builds a deployment package in memory. Keys are archive paths; a
@@ -447,4 +448,65 @@ func read(t *testing.T, dir, name string) string {
 		t.Fatalf("reading %s: %v", name, err)
 	}
 	return string(body)
+}
+
+// A presigned S3 link carries X-Amz-Credential and X-Amz-Signature in its
+// query. Go's network errors embed the whole URL, so a download that fails
+// would print a signed credential into the terminal — and from there into
+// whatever bug report the user pastes it in.
+func TestDownloadErrorsRedactTheSignedURL(t *testing.T) {
+	// A server that accepts the connection then drops it mid-body forces a
+	// *url.Error carrying the URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler) // closes the connection without a response
+	}))
+	defer srv.Close()
+
+	signed := srv.URL + "/code.zip?X-Amz-Credential=AKIAEXAMPLE%2F20260812%2Feu-west-1%2Fs3%2Faws4_request" +
+		"&X-Amz-Signature=deadbeefcafe&X-Amz-Security-Token=SECRETTOKEN"
+	_, err := FetchCode(context.Background(), srv.Client(), "createOrder", signed)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, secret := range []string{"X-Amz-Signature", "deadbeefcafe", "SECRETTOKEN", "AKIAEXAMPLE"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error leaked %q:\n%v", secret, err)
+		}
+	}
+	// It still has to be diagnosable: the host and the function must survive.
+	if !strings.Contains(err.Error(), "createOrder") || !strings.Contains(err.Error(), "code.zip") {
+		t.Errorf("redaction went too far, nothing left to debug with: %v", err)
+	}
+}
+
+// Real Lambda environments hold PEM keys, JSON blobs and URLs with fragments.
+// The generated .env has to survive its own parser, or --with-values silently
+// corrupts values on the way to disk.
+func TestGeneratedDotEnvSurvivesRealWorldValues(t *testing.T) {
+	nasty := map[string]string{
+		"PLAIN":       "hello",
+		"WITH_SPACE":  "hello world",
+		"WITH_HASH":   "value#notacomment",
+		"JSON_BLOB":   `{"a":"b","c":[1,2]}`,
+		"QUOTED":      `he said "hi"`,
+		"URL_FRAG":    "https://x.test/a#frag",
+		"MULTILINE":   "-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----",
+		"EQUALS":      "a=b=c",
+		"EMPTY":       "",
+		"TRAILING_SP": "pad ",
+	}
+	fn := zipFn()
+	fn.Env = nasty
+	p := mustPlan(t, Discovery{Function: fn, Region: "eu-west-1"}, "shop")
+
+	body := p.DotEnvLines(true)
+	got, err := dotenv.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("the .env pulse generated doesn't parse: %v\n%s", err, body)
+	}
+	for k, want := range nasty {
+		if got[k] != want {
+			t.Errorf("%s round-tripped as %q, want %q", k, got[k], want)
+		}
+	}
 }

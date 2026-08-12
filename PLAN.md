@@ -1329,6 +1329,71 @@ evidence and confirmed by the user.
   artifacts or stops at "your code is already vanilla SDK, deploy it with
   whatever you use". Deliberately left open.
 
+### 12.11 P6 test ladder — one thing at a time (his design, 2026-08-12)
+
+His call, and the right one: start with a bare Lambda and add one capability
+per rung. Two reasons beyond safety — a failure at rung N is unambiguous
+(only one thing changed), and **each rung yields a clean fixture set** we can
+record and keep testing offline forever. One big function would give one
+tangled blob.
+
+**How each rung runs** (same every time, so results are comparable):
+1. He creates/points at the function and tells me its name + region + profile.
+2. `pulse aws whoami` — prove the credential path before anything else.
+3. `pulse import aws <fn> --dry-run` — read-only, writes nothing, shows the plan.
+4. `pulse import aws <fn>` — the real thing.
+5. Read the four written files aloud; diff against what AWS actually has.
+6. `pulse start` → exercise it the way the rung allows (invoke / curl / send).
+7. Record fixtures + write findings into this section.
+8. Only then move up a rung.
+
+| Rung | What he provides | What it proves FOR THE FIRST TIME (the fake could not) |
+|---|---|---|
+| **R0** | one zip Lambda, **no** trigger/env/resources, Python or Node | the real credential chain · real STS · real `ListFunctions` shape and pagination · **the real presigned S3 download** (HTTPS + query auth + possible redirect, vs my localhost plain-HTTP zip) · a real AWS-produced zip's layout and file modes · `GetPolicy` returning the real not-found code when there are no triggers · empty `ListEventSourceMappings` · **and then: does `pulse start` + `pulse invoke` actually run it** |
+| **R1** | + env variables (still no resources) | real variable names/values · the `CHANGE_ME` path and the new `pulse start` warning · `--with-values` on real values, including the round-trip through pulse's own .env parser (quoting, `#`, JSON, PEM newlines — covered by a test now, but real data is the judge) · reserved `AWS_*` keys if any · KMS-encrypted env if he has one |
+| **R2** | + an HTTP trigger | the **resource-policy parse against a real policy** (real ones carry Sids, SourceAccount, sometimes wildcards) · real `execute-api` ARN + stage shape · the apigatewayv2 fallback walk · **v1 REST and v2 HTTP are different shapes — both worth a pass** · then `curl` the imported route locally |
+| **R3** | + an SQS trigger (ideally with a DLQ) | real `ListEventSourceMappings` (batch size, window, FIFO flag, disabled state) · real `GetQueueAttributes` + the RedrivePolicy JSON-in-a-string · the DLQ auto-create · then `pulse send` locally and watch the worker fire |
+| **R4** | + a DynamoDB table the code uses | real `DescribeTable` key schema and types · **GSIs, which real tables almost always have** → the unsupported note · streams · the guess machinery against a real execution role (see the prediction below) · then a real read/write through the local table |
+| **R5** | any messy real function, nothing built for us | layers · VPC config · provisioned concurrency · >50 functions in the account (pagination) · an SSO profile · whatever else reality has. Success here is measured in *honest notes*, not a clean import |
+
+**Predictions worth writing down before we start** — where I expect reality to
+disagree with a decision made against fakes:
+
+1. **The IAM signal will probably be missing on real functions.** P3 reads only
+   *inline* role policies, with the rationale that managed policies are broad
+   and noisy. That's true of AWS-managed ones — but real teams put table and
+   queue grants in **customer-managed** policies, which are attached, not
+   inline. So on a real Lambda the strongest guess signal may simply be absent,
+   and guesses will fall back to env vars + code scan. If R4 shows this, the
+   fix is to also read attached *customer-managed* policies (skipping
+   `arn:aws:iam::aws:policy/*`), which is one more API and one more permission.
+   Watch for it; don't pre-build it.
+2. **Real runtimes may be refused.** Accounts still run `python3.9`,
+   `nodejs16.x`, `provided.al2`, `dotnet8`. R0 might refuse his first function,
+   which is a correct result, not a bug — but worth knowing before he creates
+   something with an old default.
+3. **A REST (v1) API's payload format matters.** pulse records
+   `payloadFormat: "1.0"` only when it detects a REST API; if that detection
+   is wrong the handler sees the wrong event shape and misbehaves in a way that
+   looks like pulse working "almost". R2 is where that gets proven.
+
+**Pre-P6 hardening done while planning this (2026-08-12):**
+- **Presigned URLs are redacted from errors.** A signed S3 link carries
+  `X-Amz-Credential` and `X-Amz-Signature` in its query, and Go's `*url.Error`
+  embeds the whole URL — so a network hiccup mid-download would have printed a
+  live signed credential to the terminal, and from there into any pasted bug
+  report. `redactURL` strips the query and keeps the host, with a test that
+  asserts the signature never appears and that the message is still
+  diagnosable. This only became reachable at P6, which is why it was worth
+  fixing first.
+- **The generated `.env` is proven against real-world values**: PEM keys with
+  newlines, JSON blobs, `#`, quotes, `a=b=c`, trailing spaces — round-tripped
+  through pulse's own parser, since `--with-values` silently corrupting a value
+  would be the worst kind of bug.
+
+**Cleanup discipline**: everything he creates for a rung is his to delete, and
+I will confirm before touching anything that adds, removes or modifies (§12.8).
+
 ### 12.5 Error taxonomy (every failure names its fix)
 
 | Cause | Message → fix |
@@ -1492,7 +1557,7 @@ until a feature is stable end to end.
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
 | P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
-| **P6 live verification** | ⏭ NEXT, blocked on him | needs his test Lambda; credentials settled — he'll provide, I confirm before any add/remove |
+| **P6 live verification** | ⏭ NEXT, rung ladder in §12.11 | R0 (bare Lambda) → R1 env → R2 http → R3 sqs → R4 dynamo → R5 messy reality |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 
