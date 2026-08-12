@@ -68,6 +68,18 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 	p.Guesses = InferResources(fn.Env, d.RolePolicy, d.CodeText, d.AllTables, d.AllQueues, p.claimedQueues())
 
 	// ---- caveats that don't stop the import ----
+	//
+	// A runtime above the floor but newer than anything CI runs should work —
+	// the handler contract hasn't changed — but "should" is not "tested", and
+	// pulse says so rather than letting the user assume.
+	if config.RuntimeNewerThanTested(fn.Runtime) {
+		p.Warnings = append(p.Warnings, Note{
+			Subject: "runtime " + fn.Runtime,
+			Detail: "newer than the runtimes pulse tests in CI (" +
+				strings.Join(config.SupportedRuntimes, ", ") +
+				") — it should behave the same, and your machine needs an interpreter for it",
+		})
+	}
 	if len(fn.Layers) > 0 {
 		p.Warnings = append(p.Warnings, Note{
 			Subject: fmt.Sprintf("%d layer(s)", len(fn.Layers)),
@@ -103,10 +115,10 @@ func refuse(fn Function) error {
 			Reason: fmt.Sprintf("%q is a container-image function", fn.Name),
 			Fix:    "pulse runs zip-based functions; import a zip-packaged function, or track container support on the roadmap"}
 	}
-	if !contains(config.SupportedRuntimes, fn.Runtime) {
+	if !config.SupportsRuntime(fn.Runtime) {
 		return &Refusal{Function: fn.Name,
 			Reason: fmt.Sprintf("%q uses runtime %s, which pulse can't run", fn.Name, fn.Runtime),
-			Fix:    "pulse supports " + strings.Join(config.SupportedRuntimes, ", ") + " today"}
+			Fix:    "pulse runs " + config.RuntimeFloor + " (zip-packaged)"}
 	}
 	if fn.CodeSize > maxCodeSize {
 		return &Refusal{Function: fn.Name,

@@ -161,7 +161,7 @@ func TestValidationProblems(t *testing.T) {
 			name: "runtime typo gets suggestion",
 			yaml: strings.Replace(minimalBase, "nodejs20.x", "nodejs20x", 1),
 			dirs: []string{"fn"},
-			want: []string{"not a supported runtime", `did you mean "nodejs20.x"`},
+			want: []string{"is not a runtime pulse can run", `did you mean "nodejs20.x"`},
 		},
 		{
 			name: "unknown trigger function gets suggestion",

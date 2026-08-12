@@ -101,10 +101,11 @@ func (v *validator) functions() {
 		p := "functions." + name
 
 		if fn.Runtime == "" {
-			v.addf(p+".runtime", "required — one of: %s", strings.Join(SupportedRuntimes, ", "))
-		} else if !contains(SupportedRuntimes, fn.Runtime) {
-			v.addf(p+".runtime", "%q is not a supported runtime%s (supported: %s)",
-				fn.Runtime, DidYouMean(fn.Runtime, SupportedRuntimes), strings.Join(SupportedRuntimes, ", "))
+			v.addf(p+".runtime", "required — %s, e.g. %s", RuntimeFloor, SupportedRuntimes[0])
+		} else if !SupportsRuntime(fn.Runtime) {
+			v.addf(p+".runtime", "%q is not a runtime pulse can run%s — %s (tested in CI: %s)",
+				fn.Runtime, DidYouMean(fn.Runtime, SupportedRuntimes), RuntimeFloor,
+				strings.Join(SupportedRuntimes, ", "))
 		}
 
 		family := RuntimeFamily(fn.Runtime)

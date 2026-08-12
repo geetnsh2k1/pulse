@@ -44,14 +44,6 @@ func (c *Config) PlaceholderKeys() []string {
 	return out
 }
 
-// SupportedRuntimes is the set of Lambda runtimes pulse certifies — the
-// same matrix scripts/e2e.sh exercises in CI (Python 3.10+, Node 18+).
-// python3.9 was dropped once AWS retired it; python3.13 is current.
-var SupportedRuntimes = []string{
-	"nodejs18.x", "nodejs20.x", "nodejs22.x",
-	"python3.10", "python3.11", "python3.12", "python3.13",
-}
-
 // ReservedEnvKeys are variables a project may not set. AWS Lambda rejects
 // these in function configuration, and pulse has the same reason to: they
 // carry the runtime protocol and the local AWS façade. Letting a project

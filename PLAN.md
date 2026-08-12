@@ -1394,6 +1394,64 @@ disagree with a decision made against fakes:
 **Cleanup discipline**: everything he creates for a rung is his to delete, and
 I will confirm before touching anything that adds, removes or modifies (§12.8).
 
+### 12.13 R0 RESULTS — first live run, and the bug it found (2026-08-13)
+
+Account 419837309667 (Tartan work account, his call), ap-south-1, profile
+`tartan` = `user/akash`. R4/R5 deferred at his request. Full transcripts live
+outside the repo in `~/Desktop/pulse-testing/` — deliberately not committed,
+since this repo is public.
+
+**Two functions**: `start-specific-application` (in real use — read-only
+dry-run only, then left alone) and `send-bulk-templated-email` (a sample, safe
+to play with) which became the R0 subject.
+
+**R0 is green, end to end.** whoami → dry-run (0 files written, verified) →
+real import → `pulse start` → `pulse invoke` returned *exactly* what the
+function returns in AWS:
+
+    ✓ send-bulk-templated-email · success · 0ms
+    {"statusCode": 200, "body": "{\"message\": \"Hello, World!\"}"}
+
+Everything the fake could only simulate now holds against real AWS: the
+credential chain, real STS, the real presigned S3 download (295 bytes, HTTPS +
+query auth), real `GetFunction` shape, `GetPolicy` correctly reporting no
+routes, empty event-source mappings, and a pulse.yaml matching AWS field for
+field (python3.14, `lambda_function.lambda_handler`, 3s, 128 MB).
+
+**The bug: `SupportedRuntimes` was stale by design.** The function runs
+**python3.14** and pulse refused it. The README has promised "Python 3.10+ and
+Node 18+" since launch while the code enforced an exact enumeration — so every
+AWS runtime release made pulse wrong until someone edited a slice and shipped.
+AWS ships python3.14 *today*, so the import feature was stale before it
+launched.
+
+This is the **same bug already fixed once** in `pulse doctor`, which used to
+flag Python 3.13 as uncertified while CI tested it (§11 L1 findings, item 2).
+The list survived in the place that gates what pulse.yaml may declare and what
+import will accept. Now `config.SupportsRuntime` is a floor:
+`internal/config/runtimes.go`, family + `MinNodeMajor`/`MinPythonMajor.Minor`,
+anything at or above it accepted including versions this build never heard of.
+`SupportedRuntimes` survives as *what CI exercises* — used for typo
+suggestions and error examples, never as the gate.
+
+Accepted-but-untested became its own category rather than a silent assumption:
+`config.RuntimeNewerThanTested` puts a caveat in the plan and in
+IMPORT-NOTES.md, and `pulse start` already said the honest thing at run time
+("using python 3.13.2 for python3.14 functions … behavior may differ").
+Tests cover python3.14/3.20/4.0 and nodejs24/99 accepted, python3.9 and
+nodejs16 refused, java/dotnet/ruby/go/provided refused, malformed refused, and
+every CI-matrix runtime passing its own gate.
+
+**Lesson worth generalizing**: pulse has now shipped this identical bug twice
+in two places. Any hardcoded list of *versions* is a bug with a delay on it —
+if a third one appears (runtime families in workers, say), make it a floor
+before it bites.
+
+**Permissions**: `dynamodb:ListTables` and `iam:ListRolePolicies` are denied
+for this credential; both degraded with the missing permission named, and
+neither failed the import. R0–R3 are unaffected. R4 needs those DynamoDB reads
+granted — one reason it's deferred.
+
 ### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
 
 He decided to import from the Tartan work account (he has access; a new test
@@ -1604,7 +1662,7 @@ until a feature is stable end to end.
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
 | P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
-| **P6 live verification** | ⏭ NEXT, rung ladder in §12.11 | R0 (bare Lambda) → R1 env → R2 http → R3 sqs → R4 dynamo → R5 messy reality |
+| **P6 live verification** | 🟡 R0 GREEN (§12.13) | live on a real Lambda; R1 env next · R4/R5 deferred (R4 needs dynamodb reads granted) |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 

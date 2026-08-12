@@ -63,9 +63,11 @@ func TestBuildPlanRefusals(t *testing.T) {
 		fixHas string
 	}{
 		{"container image", func(f *Function) { f.PackageType = "Image" }, "container-image", "zip-based"},
-		{"java runtime", func(f *Function) { f.Runtime = "java17" }, "runtime java17", "python3.12"},
-		{"go runtime", func(f *Function) { f.Runtime = "provided.al2" }, "provided.al2", "supports"},
-		{"retired python", func(f *Function) { f.Runtime = "python3.9" }, "python3.9", "supports"},
+		// The fix states the FLOOR, not an enumeration: a fixed list refused a
+		// real python3.14 function the day AWS shipped it.
+		{"java runtime", func(f *Function) { f.Runtime = "java17" }, "runtime java17", "Python 3.10+"},
+		{"go runtime", func(f *Function) { f.Runtime = "provided.al2" }, "provided.al2", "Node 18+"},
+		{"retired python", func(f *Function) { f.Runtime = "python3.9" }, "python3.9", "Python 3.10+"},
 		{"oversized", func(f *Function) { f.CodeSize = 300 << 20 }, "300 MB", "deployment artifacts"},
 		{"no handler", func(f *Function) { f.Handler = "" }, "no handler", "handler.handler"},
 	}
@@ -416,4 +418,26 @@ func notesText(ns []Note) string {
 		b.WriteString(n.Subject + " " + n.Detail + "\n")
 	}
 	return b.String()
+}
+
+// A runtime newer than the CI matrix is imported, not refused — but it must
+// arrive with a caveat rather than a silent assumption. This is the real case
+// from P6 R0: a deployed function on python3.14.
+func TestBuildPlanAcceptsNewerRuntimeWithACaveat(t *testing.T) {
+	fn := zipFn()
+	fn.Runtime = "python3.14"
+	p, err := BuildPlan(Discovery{Function: fn, Region: "ap-south-1"}, "shop")
+	if err != nil {
+		t.Fatalf("a runtime above the floor must import, got: %v", err)
+	}
+	if p.Functions[0].Runtime != "python3.14" {
+		t.Errorf("runtime = %q, want the real one preserved", p.Functions[0].Runtime)
+	}
+	notes := notesText(p.Warnings)
+	if !strings.Contains(notes, "python3.14") || !strings.Contains(notes, "CI") {
+		t.Errorf("an untested runtime should be flagged, got: %s", notes)
+	}
+	if !strings.Contains(notes, "interpreter") {
+		t.Errorf("the note should mention needing a local interpreter, got: %s", notes)
+	}
 }
