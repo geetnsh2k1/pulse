@@ -263,7 +263,7 @@ func TestPreviewPlanIsHonestAboutEverything(t *testing.T) {
 		"order-events",    // the confirmed queue trigger
 		"orders", "pk id", // the table with its real key
 		"inferred from env TABLE_NAME + iam policy", // and why it's there
-		"2 environment variable(s) → .env",
+		"env → .env", "API_KEY", "TABLE_NAME", // names shown, so nothing is a surprise
 		"caveats", "layer", // imported with a catch
 		"not imported", "kinesis", // and what didn't come at all
 		"IMPORT-NOTES.md",

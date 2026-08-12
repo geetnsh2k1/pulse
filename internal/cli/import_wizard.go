@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/importer"
 	"github.com/geetnsh2k1/pulse/internal/ui"
 )
@@ -127,6 +128,18 @@ func confirmGuesses(in *bufio.Reader, out io.Writer, guesses []importer.Guess, a
 	return picked, nil
 }
 
+// envNames lists the variables that will reach .env, skipping the reserved
+// ones pulse sets itself (they are reported separately as warnings).
+func envNames(f importer.PlannedFunction) []string {
+	out := make([]string, 0, len(f.EnvNames))
+	for _, k := range f.EnvNames {
+		if !config.ReservedEnvKeys[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // evidence renders why pulse thinks a resource is used, in the user's terms.
 // Capped at two reasons: a line that wraps twice stops being read, and two
 // signals is already the threshold for a strong guess.
@@ -159,8 +172,20 @@ func previewPlan(out io.Writer, p *importer.Plan, dest string) {
 	for _, f := range p.Functions {
 		fmt.Fprintf(out, "    %-22s %s\n", ui.Fn(f.Name),
 			ui.Dim(fmt.Sprintf("%s · %s · %ds · %d MB", f.Runtime, f.Handler, f.TimeoutSec, f.MemoryMB)))
-		if n := len(f.EnvNames); n > 0 {
-			fmt.Fprintf(out, "    %s\n", ui.Dim(fmt.Sprintf("  %d environment variable(s) → .env", n)))
+		// Name the variables, don't just count them. A preview exists so nobody
+		// is surprised by what lands on disk, and "2 environment variable(s)"
+		// hides the thing worth seeing. Names are safe to print — pulse commits
+		// them to .env.example — and values never are.
+		if names := envNames(f); len(names) > 0 {
+			shown, extra := names, 0
+			if len(shown) > 8 {
+				shown, extra = shown[:8], len(names)-8
+			}
+			line := "  env → .env  " + strings.Join(shown, " · ")
+			if extra > 0 {
+				line += fmt.Sprintf(" · and %d more", extra)
+			}
+			fmt.Fprintf(out, "    %s\n", ui.Dim(line))
 		}
 	}
 

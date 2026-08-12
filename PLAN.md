@@ -1452,6 +1452,36 @@ for this credential; both degraded with the missing permission named, and
 neither failed the import. R0–R3 are unaffected. R4 needs those DynamoDB reads
 granted — one reason it's deferred.
 
+### 12.14 R1 RESULTS — environment variables, live (2026-08-13)
+
+Same function as R0 with `API_KEY` and `BASE_URL` added in the console.
+**Green.** The secrets promise held against real AWS: both names discovered,
+both values written as `CHANGE_ME`, and neither name nor value anywhere in
+pulse.yaml (grep = 0). `.env.example` carried names only. `pulse start` warned
+naming the unfilled variables, `pulse doctor` reported it as a warning rather
+than a failure and surfaced IMPORT-NOTES.md — the P5.5 #4 and P5.6 #4 fixes
+both earning their place on live data.
+
+**The proof R1 could add that R0 could not**: a temporary
+`print(os.environ.get(...))` in the handler showed pulse's written values
+arriving *inside the running function* (`CHANGE_ME | CHANGE_ME`), so the whole
+chain — AWS → .env → worker environment — is verified end to end, not inferred.
+Hot reload carried the edit (`workers retired, next invoke runs fresh code`)
+and the handler was restored immediately.
+
+**Improvement made during the rung**: the dry run said "2 environment
+variable(s) → .env" without saying which. A preview exists so nothing is a
+surprise, and the count hid the part worth seeing — particularly for deciding
+whether `--with-values` is wanted at all. Names are safe to print (pulse
+already commits them to `.env.example`); values never are. Now
+`env → .env  API_KEY · BASE_URL`, capped at 8 + "and N more".
+
+**Deliberately still untested**: `--with-values` against this account. It is
+the one path only real data can prove (quoting, `#`, JSON, PEM newlines) and
+also the one that puts real secrets on disk. Covered offline by
+`TestGeneratedDotEnvSurvivesRealWorldValues`; needs his explicit call, and only
+for throwaway values.
+
 ### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
 
 He decided to import from the Tartan work account (he has access; a new test
@@ -1662,7 +1692,7 @@ until a feature is stable end to end.
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
 | P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
-| **P6 live verification** | 🟡 R0 GREEN (§12.13) | live on a real Lambda; R1 env next · R4/R5 deferred (R4 needs dynamodb reads granted) |
+| **P6 live verification** | 🟡 R0+R1 GREEN (§12.13–14) | live on a real Lambda; R2 http next · R4/R5 deferred (R4 needs dynamodb reads granted) |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 
