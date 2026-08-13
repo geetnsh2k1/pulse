@@ -1476,11 +1476,22 @@ whether `--with-values` is wanted at all. Names are safe to print (pulse
 already commits them to `.env.example`); values never are. Now
 `env → .env  API_KEY · BASE_URL`, capped at 8 + "and N more".
 
-**Deliberately still untested**: `--with-values` against this account. It is
-the one path only real data can prove (quoting, `#`, JSON, PEM newlines) and
-also the one that puts real secrets on disk. Covered offline by
-`TestGeneratedDotEnvSurvivesRealWorldValues`; needs his explicit call, and only
-for throwaway values.
+**`--with-values` re-test, same day, after he confirmed the values are
+throwaway and updated the handler to consume them — also green.** The real
+value reached the running function:
+
+    {"message": "Hello, World!", "app_name": null, "environment": "www.google.com"}
+
+`www.google.com` is what is set in AWS, so the whole chain (AWS env var → .env
+→ worker environment → handler → response) is proven with real data in *both*
+modes. `.env` came out 0600 and gitignored, `.env.example` stayed names-only
+even with `--with-values`, pulse.yaml leaked nothing, and `diff -rq` against a
+placeholder import of the same function showed **exactly one differing file**
+(`.env`) — so the flag's blast radius is provably one file.
+
+Nice accident worth keeping: his handler reads `APP_KEY` while AWS has
+`API_KEY`, so `app_name` came back `null` — which is exactly what AWS returns.
+Faithful parity on a *missing* variable, not just a present one.
 
 ### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
 
@@ -1692,7 +1703,7 @@ until a feature is stable end to end.
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
 | P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
-| **P6 live verification** | 🟡 R0+R1 GREEN (§12.13–14) | live on a real Lambda; R2 http next · R4/R5 deferred (R4 needs dynamodb reads granted) |
+| **P6 live verification** | 🟡 R0+R1 GREEN (§12.13–14) | R1 both modes incl. --with-values; R2 http next · R4/R5 deferred (R4 needs dynamodb reads granted) |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 
