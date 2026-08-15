@@ -79,6 +79,18 @@ except BaseException as exc:  # noqa: BLE001 — report any import failure
     _post(f"{BASE}/init/error", _error_body(exc))
     sys.exit(1)
 
+def _end_of_request(request_id):
+    """Tell the engine this request's output is complete.
+
+    The engine reads stdout and stderr on separate pipes, so finishing the
+    handler says nothing about whether those lines have been read yet. Marking
+    both streams — after the handler, before the response — gives the engine a
+    real happens-before instead of a timing guess.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        print(f"\x01pulse:end-of-request:{request_id}", file=stream, flush=True)
+
+
 while True:
     try:
         resp = urllib.request.urlopen(
@@ -102,7 +114,9 @@ while True:
     ctx = Context(request_id, deadline_ms, arn)
     try:
         result = _handler(event, ctx)
+        _end_of_request(request_id)
         _post(f"{BASE}/invocation/{request_id}/response", json.dumps(result, default=str))
     except Exception as exc:  # noqa: BLE001 — any handler error goes to the engine
         print(traceback.format_exc(), file=sys.stderr)
+        _end_of_request(request_id)
         _post(f"{BASE}/invocation/{request_id}/error", _error_body(exc))

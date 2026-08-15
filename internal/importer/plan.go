@@ -66,6 +66,14 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 
 	// ---- what we can only infer ----
 	p.Guesses = InferResources(fn.Env, d.RolePolicy, d.CodeText, d.AllTables, d.AllQueues, p.claimedQueues())
+	p.RuntimeProvided = runtimeProvidedDeps(fn.Runtime, d.CodeText)
+	if len(p.RuntimeProvided) > 0 {
+		p.Warnings = append(p.Warnings, Note{
+			Subject: "runtime-provided dependencies (" + strings.Join(p.RuntimeProvided, ", ") + ")",
+			Detail: "AWS's " + fn.Runtime + " runtime preinstalls these, so the deployment package doesn't " +
+				"declare them — your machine has to install them to run the function locally",
+		})
+	}
 
 	// ---- caveats that don't stop the import ----
 	//
@@ -99,6 +107,42 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 		})
 	}
 	return p, nil
+}
+
+// awsSDKImport matches the SDKs AWS bakes into its own runtimes: boto3 and
+// botocore in every Python runtime, @aws-sdk/* in Node 18+. A deployed
+// function therefore imports them without shipping them, which is invisible
+// until it runs somewhere that isn't Lambda.
+var (
+	pyAWSImport   = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(boto3|botocore)\b`)
+	nodeAWSImport = regexp.MustCompile(`@aws-sdk/[a-z0-9-]+`)
+)
+
+// runtimeProvidedDeps lists the packages this code needs that AWS supplies for
+// free and a laptop does not. Scanning the handler's own source is the only
+// way to know: nothing in the function's configuration records it.
+func runtimeProvidedDeps(runtime, code string) []string {
+	if code == "" {
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(runtime, "python"):
+		if pyAWSImport.MatchString(code) {
+			return []string{"boto3"}
+		}
+	case strings.HasPrefix(runtime, "nodejs"):
+		seen := map[string]bool{}
+		var out []string
+		for _, pkg := range nodeAWSImport.FindAllString(code, -1) {
+			if !seen[pkg] {
+				seen[pkg] = true
+				out = append(out, pkg)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	return nil
 }
 
 // Importable reports whether this function can be imported at all, without

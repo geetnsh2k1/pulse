@@ -104,9 +104,21 @@ while (true) {
 
   try {
     const result = await run(handler, event, context);
+    endOfRequest(requestId);
     await post(`${base}/invocation/${requestId}/response`, JSON.stringify(result ?? null));
   } catch (err) {
     console.error(String(err?.stack ?? err));
+    endOfRequest(requestId);
     await post(`${base}/invocation/${requestId}/error`, errorBody(err));
   }
+}
+
+// endOfRequest tells the engine this request's output is complete. stdout and
+// stderr are separate pipes, so the handler returning says nothing about
+// whether those lines have been read — marking both, after the handler and
+// before the response, gives the engine a real happens-before rather than a
+// timing guess. The engine swallows these lines.
+function endOfRequest(requestId) {
+  process.stdout.write(`\x01pulse:end-of-request:${requestId}\n`);
+  process.stderr.write(`\x01pulse:end-of-request:${requestId}\n`);
 }

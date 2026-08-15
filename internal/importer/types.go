@@ -179,15 +179,18 @@ type PlannedTable struct {
 // Plan is the reviewable result: exactly what pulse would write, why, and
 // what it could not represent. Nothing is written until this is approved.
 type Plan struct {
-	Project     string
-	Region      string
-	Functions   []PlannedFunction
-	Triggers    []PlannedTrigger
-	Tables      []PlannedTable
-	Queues      []PlannedQueue
-	Guesses     []Guess // unconfirmed candidates for the picker
-	Unsupported []Note  // found, cannot be represented
-	Warnings    []Note  // imported, but with a caveat
+	Project   string
+	Region    string
+	Functions []PlannedFunction
+	Triggers  []PlannedTrigger
+	Tables    []PlannedTable
+	Queues    []PlannedQueue
+	Guesses   []Guess // unconfirmed candidates for the picker
+	// RuntimeProvided are packages AWS's own runtime supplies (boto3,
+	// @aws-sdk/*) that a laptop must install before the function will run.
+	RuntimeProvided []string
+	Unsupported     []Note // found, cannot be represented
+	Warnings        []Note // imported, but with a caveat
 }
 
 // Refusal is returned when a function cannot be imported at all — a

@@ -255,7 +255,7 @@ func runImportAWS(cmd *cobra.Command, args []string) error {
 	// Install what the function needs, the way `pulse init` does, so the next
 	// step is `pulse start` and not a copy-paste chore.
 	installed := false
-	if step := dependencyStep(written); step != nil && !flagImportNoInstall {
+	if step := dependencyStep(plan, written); step != nil && !flagImportNoInstall {
 		installed = installImportedDeps(out, dest, step)
 	}
 	printImportNextSteps(out, plan, dest, written, installed)
@@ -455,7 +455,7 @@ func printImportNextSteps(out io.Writer, plan *importer.Plan, dest string, writt
 		fmt.Fprintf(out, "  %s %s\n", ui.Accent("edit .env"),
 			ui.Dim(fmt.Sprintf("— %d value(s) are CHANGE_ME", countEnv(plan))))
 	}
-	if step := dependencyStep(written); step != nil && !installed {
+	if step := dependencyStep(plan, written); step != nil && !installed {
 		fmt.Fprintf(out, "  %s %s\n", ui.Accent(step.manual), ui.Dim("— "+step.why))
 	}
 	fmt.Fprintf(out, "  %s\n", ui.Accent("pulse start"))
@@ -465,9 +465,10 @@ func printImportNextSteps(out io.Writer, plan *importer.Plan, dest string, writt
 // depStep is the one dependency command an imported project needs, derived
 // from what actually landed on disk rather than guessed from the runtime.
 type depStep struct {
-	lang   string // python | node
-	dir    string // the function's directory, relative to the project root
-	manual string // the command to print when pulse doesn't run it
+	lang   string   // python | node | python-pkgs | node-pkgs
+	dir    string   // the function's directory, relative to the project root
+	pkgs   []string // explicit packages, when there is no manifest to read
+	manual string   // the command to print when pulse doesn't run it
 	why    string
 }
 
@@ -475,7 +476,7 @@ type depStep struct {
 // usually vendors its dependencies, in which case there is nothing to do and
 // suggesting otherwise would be noise; a bundle carrying only a manifest needs
 // exactly one command.
-func dependencyStep(written *importer.Written) *depStep {
+func dependencyStep(plan *importer.Plan, written *importer.Written) *depStep {
 	if written == nil {
 		return nil
 	}
@@ -508,9 +509,99 @@ func dependencyStep(written *importer.Written) *depStep {
 			manual: fmt.Sprintf("python3 -m venv .venv && .venv/bin/pip install -r %s/requirements.txt", dir),
 			why:    "pulse runs python functions from the project's .venv"}
 	}
-	// No manifest and nothing vendored: the dependencies lived in a layer, and
-	// the plan's caveats already say so.
+	// No manifest at all — but AWS's runtime hands the function boto3 or the
+	// JS SDK for free, so a deployed function imports them without ever
+	// declaring them. That is invisible until it runs somewhere that isn't
+	// Lambda, where it becomes a bare ModuleNotFoundError on the first request.
+	if plan != nil && len(plan.RuntimeProvided) > 0 {
+		dir := codeDirOf(written)
+		switch {
+		case pythonPlan(plan):
+			return &depStep{lang: "python-pkgs", dir: dir, pkgs: plan.RuntimeProvided,
+				manual: "python3 -m venv .venv && .venv/bin/pip install " + strings.Join(plan.RuntimeProvided, " "),
+				why:    "AWS's runtime provides these; your machine doesn't"}
+		case dir != "":
+			return &depStep{lang: "node-pkgs", dir: dir, pkgs: plan.RuntimeProvided,
+				manual: "npm install --prefix " + dir + " " + strings.Join(plan.RuntimeProvided, " "),
+				why:    "AWS's runtime provides these; your machine doesn't"}
+		}
+	}
+
+	// Nothing declared and nothing provided: the dependencies lived in a layer,
+	// and the plan's caveats already say so.
 	return nil
+}
+
+// codeDirOf finds the directory the handler was unpacked into.
+func codeDirOf(written *importer.Written) string {
+	for _, f := range written.Files {
+		slash := filepath.ToSlash(f)
+		if strings.HasPrefix(slash, "functions/") {
+			if i := strings.Index(slash[len("functions/"):], "/"); i > 0 {
+				return "functions/" + slash[len("functions/"):][:i]
+			}
+		}
+	}
+	return ""
+}
+
+func pythonPlan(plan *importer.Plan) bool {
+	for _, f := range plan.Functions {
+		if strings.HasPrefix(f.Runtime, "python") {
+			return true
+		}
+	}
+	return false
+}
+
+// installNamedPackages installs an explicit list rather than a manifest — the
+// case where AWS's runtime was the manifest.
+func installNamedPackages(out io.Writer, root string, s *depStep) bool {
+	if s.lang == "node-pkgs" {
+		if _, err := exec.LookPath("npm"); err != nil {
+			return false
+		}
+		sp := ui.StartSpinner("installing " + strings.Join(s.pkgs, ", ") + " (provided by AWS's runtime)")
+		args := append([]string{"install", "--no-fund", "--no-audit", "--prefix", s.dir}, s.pkgs...)
+		c := exec.Command("npm", args...)
+		c.Dir = root
+		if o, err := c.CombinedOutput(); err != nil {
+			sp.Fail("didn't finish")
+			fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+			return false
+		}
+		sp.Success()
+		return true
+	}
+
+	py := ""
+	for _, c := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(c); err == nil {
+			py = p
+			break
+		}
+	}
+	if py == "" {
+		return false
+	}
+	sp := ui.StartSpinner("installing " + strings.Join(s.pkgs, ", ") + " (provided by AWS's runtime)")
+	venv := exec.Command(py, "-m", "venv", ".venv")
+	venv.Dir = root
+	if o, err := venv.CombinedOutput(); err != nil {
+		sp.Fail("didn't finish")
+		fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+		return false
+	}
+	pipArgs := append([]string{"-m", "pip", "install", "-q"}, s.pkgs...)
+	pip := exec.Command(filepath.Join(root, ".venv", "bin", "python"), pipArgs...)
+	pip.Dir = root
+	if o, err := pip.CombinedOutput(); err != nil {
+		sp.Fail("didn't finish")
+		fmt.Fprintf(out, "  %s\n", ui.Dim(lastLine(o)))
+		return false
+	}
+	sp.Success()
+	return true
 }
 
 // installImportedDeps finishes the job. `pulse init` already installs what it
@@ -522,6 +613,8 @@ func installImportedDeps(out io.Writer, root string, s *depStep) bool {
 		root = abs // exec resolves relative binaries against cmd.Dir
 	}
 	switch s.lang {
+	case "python-pkgs", "node-pkgs":
+		return installNamedPackages(out, root, s)
 	case "node":
 		if _, err := exec.LookPath("npm"); err != nil {
 			return false

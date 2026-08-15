@@ -62,6 +62,16 @@ func (w *worker) scan(p *pool, r io.Reader, stream string) {
 		if inv := w.current.Load(); inv != nil {
 			requestID = inv.ID
 		}
+		// The shim's end-of-request marker is a synchronization signal, not
+		// output: seeing it proves this stream has already delivered every
+		// line the handler produced. It is never shown to the user.
+		if id, ok := logs.IsEndOfRequest(sc.Text()); ok {
+			if id == "" {
+				id = requestID
+			}
+			p.sink.StreamComplete(id)
+			continue
+		}
 		p.sink.Write(logs.Line{
 			Function:  p.fn.Name,
 			RequestID: requestID,

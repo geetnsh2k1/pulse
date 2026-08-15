@@ -100,6 +100,11 @@ func (m *Manager) Warnings() []string { return m.warnings }
 // Invoke runs one function synchronously and returns its result, including
 // exactly the log lines that request produced. Every invocation is recorded
 // in the store (and its event payload kept for phase-5 replay).
+// logCollectTimeout bounds the wait for a handler that never signals — one
+// killed mid-run, or a runtime whose shim died. A missing log line must never
+// hang an invocation.
+const logCollectTimeout = 500 * time.Millisecond
+
 func (m *Manager) Invoke(ctx context.Context, function, source string, payload []byte) (*Result, error) {
 	return m.InvokeAs(ctx, uuid.NewString(), function, source, payload)
 }
@@ -134,9 +139,11 @@ func (m *Manager) InvokeAs(ctx context.Context, id, function, source string, pay
 		return nil, err
 	}
 
-	// Give trailing stdout a beat to flow through the pipes before snapshotting.
-	time.Sleep(15 * time.Millisecond)
-	res.Logs = m.sink.EndCollect(id)
+	// Wait for both output streams to signal they have flushed this request,
+	// rather than sleeping and hoping. Normally both markers have already
+	// arrived, so this returns immediately — which also gives every invocation
+	// back the 15ms the old sleep cost it.
+	res.Logs = m.sink.WaitCollect(id, logCollectTimeout)
 
 	var resultPayload []byte
 	errMsg := ""
