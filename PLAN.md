@@ -1493,6 +1493,45 @@ Nice accident worth keeping: his handler reads `APP_KEY` while AWS has
 `API_KEY`, so `app_name` came back `null` — which is exactly what AWS returns.
 Faithful parity on a *missing* variable, not just a present one.
 
+### 12.15 R2 pre-flight — the payload-format bug, found before importing (2026-08-13)
+
+He offered `slack-bot-event-handler` (behind API Gateway) for R2. A read-only
+dry run against it answered "will this work?" — yes, and richly: a real route
+`POST /slack/events`, three env vars (`DOC_DB_URI`, `SLACK_EVENT_QUEUE_URL`,
+`SLACK_SIGNING_SECRET` — so **no `--with-values` on this one, ever**), a layer,
+**VPC configuration**, and a FIFO queue *inferred from an env var and then
+described* — the guess machinery working on real production data, flagged
+correctly as FIFO-not-fully-emulated.
+
+**The bug it exposed (§12.11 prediction #3, confirmed).**
+`routeFromExecuteARN` hardcoded `PayloadFormat: "2.0"`, and `routes()` returned
+early whenever the resource policy yielded routes — never asking which *kind*
+of API it was. A Lambda resource policy produces an identical `execute-api`
+ARN for a REST API (v1, always payload 1.0) and an HTTP API (v2, normally
+2.0). The two formats put the method and path in different places, so assuming
+2.0 for a REST-API function hands a working handler an event it doesn't
+recognize: **fails locally, fine in production** — the exact "looks like pulse
+almost works" failure the whole project exists to prevent.
+
+His account is the ideal place to have caught it: it runs **both** — 11+ v1
+REST APIs and 6 v2 HTTP APIs.
+
+Fixed in `resolvePayloadFormats`: the API ID from the policy is checked against
+the account's HTTP APIs (paginated — a half-read list would mislabel real APIs
+as REST). Found → use that API's declared format. Not found → REST v1 → 1.0 by
+elimination. **Unreadable → assume nothing**: keep the default and report
+`api payload format … assuming 2.0 — if this is a REST API, set
+payloadFormat: "1.0"`. Three tests cover those branches.
+
+Luck worth recording: the Slack function itself was never mis-imported,
+because its policy has a wildcard method (`wqjccz47fi/*/*/slack/events`) which
+pulse correctly refuses to guess from — so it already fell through to the API
+Gateway walk, which derives the format properly. The bug only bites when the
+policy names a concrete method, which is exactly what v1 REST APIs generate.
+
+**Still needed to finish R2**: a function behind one of the account's v1 REST
+APIs, to prove the 1.0 path end to end on real data rather than on fakes.
+
 ### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
 
 He decided to import from the Tartan work account (he has access; a new test
@@ -1703,7 +1742,7 @@ until a feature is stable end to end.
 | P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
 | P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
 | P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
-| **P6 live verification** | 🟡 R0+R1 GREEN (§12.13–14) | R1 both modes incl. --with-values; R2 http next · R4/R5 deferred (R4 needs dynamodb reads granted) |
+| **P6 live verification** | 🟡 R0+R1 GREEN, R2 in progress (§12.13–15) | R2 pre-flight already found the v1/v2 payload-format bug; needs a REST-API function to finish |
 | P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
 | P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
 

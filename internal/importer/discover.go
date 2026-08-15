@@ -392,6 +392,9 @@ func sourceKind(arn string, m lambdatypes.EventSourceMappingConfiguration) strin
 func (d *Discoverer) routes(ctx context.Context, fn Function) ([]HTTPRoute, error) {
 	fromPolicy, err := d.routesFromPolicy(ctx, fn.Name)
 	if err == nil && len(fromPolicy) > 0 {
+		// The policy gave us methods and paths but cannot say which KIND of API
+		// this is, and that decides the event shape the handler receives.
+		d.resolvePayloadFormats(ctx, fromPolicy)
 		return fromPolicy, nil
 	}
 	if d.APIGW == nil {
@@ -521,6 +524,59 @@ func (d *Discoverer) routesFromAPIs(ctx context.Context, fnName string) ([]HTTPR
 		}
 	}
 	return out, nil
+}
+
+// resolvePayloadFormats settles the one thing a Lambda resource policy cannot
+// tell us: whether the API in front of this function is an HTTP API (v2,
+// payload format 2.0 unless configured otherwise) or a REST API (v1, always
+// 1.0). Both produce an identical-looking `execute-api` ARN.
+//
+// It matters more than it sounds. The two formats put the method and path in
+// different places, so assuming the wrong one hands a working handler an event
+// it doesn't recognize — it fails locally while production is fine, which is
+// the exact "looks like pulse almost works" failure pulse exists to avoid.
+//
+// An API ID that is not in the v2 list is a REST API by elimination. If the
+// list can't be read at all, nothing is assumed: the routes keep their default
+// and the gap is reported.
+func (d *Discoverer) resolvePayloadFormats(ctx context.Context, routes []HTTPRoute) {
+	if d.APIGW == nil {
+		return
+	}
+	formats, err := d.httpAPIFormats(ctx)
+	if err != nil {
+		d.degrade("api payload format", whyUnreadable(err)+
+			" · assuming 2.0 (HTTP API) — if this is a REST API, set payloadFormat: \"1.0\" in pulse.yaml")
+		return
+	}
+	for i := range routes {
+		if f, ok := formats[routes[i].APIID]; ok {
+			routes[i].PayloadFormat = f
+			continue
+		}
+		// Not an HTTP API, so it is a REST API: those always use 1.0.
+		routes[i].PayloadFormat = "1.0"
+	}
+}
+
+// httpAPIFormats maps every v2 HTTP API in the region to its payload format,
+// following pagination — a half-read list would mislabel real APIs as REST.
+func (d *Discoverer) httpAPIFormats(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	var next *string
+	for {
+		page, err := d.APIGW.GetApis(ctx, &apigatewayv2.GetApisInput{NextToken: next})
+		if err != nil {
+			return nil, err
+		}
+		for _, api := range page.Items {
+			out[aws.ToString(api.ApiId)] = payloadFormat(api)
+		}
+		if page.NextToken == nil || aws.ToString(page.NextToken) == "" {
+			return out, nil
+		}
+		next = page.NextToken
+	}
 }
 
 // integrationTargets reports whether a route's integration points at this

@@ -570,3 +570,72 @@ func TestDiscoveryFeedsBuildPlan(t *testing.T) {
 		t.Fatalf("orders should be a strong guess with both signals, got %+v", p.Guesses)
 	}
 }
+
+// A Lambda resource policy produces an identical `execute-api` ARN for a REST
+// API (v1, payload format 1.0) and an HTTP API (v2, normally 2.0). The two
+// formats put the method and path in different places, so assuming the wrong
+// one hands a working handler an event it doesn't recognize: it fails locally
+// while production is fine — precisely the "looks like pulse almost works"
+// failure pulse exists to prevent.
+func TestRoutesFromPolicyResolveTheRealPayloadFormat(t *testing.T) {
+	policyFor := func(apiID string) *lambda.GetPolicyOutput {
+		return &lambda.GetPolicyOutput{Policy: aws.String(`{"Statement":[{
+			"Effect":"Allow","Principal":{"Service":"apigateway.amazonaws.com"},
+			"Condition":{"ArnLike":{"AWS:SourceArn":
+			"arn:aws:execute-api:eu-west-1:1234:` + apiID + `/prod/POST/orders"}}}]}`)}
+	}
+
+	t.Run("REST API v1 — not in the HTTP API list", func(t *testing.T) {
+		d := discovererFixture()
+		d.Lambda.(*fakeLambda).policy = policyFor("restapi123")
+		// The account's HTTP APIs do not include it, so it is a REST API.
+		d.APIGW.(*fakeAPIGW).apis = []apigwtypes.Api{
+			{ApiId: aws.String("httpapi999"), ProtocolType: apigwtypes.ProtocolTypeHttp},
+		}
+
+		got, err := d.Discover(context.Background(), "createOrder")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Routes) != 1 {
+			t.Fatalf("routes = %+v", got.Routes)
+		}
+		if got.Routes[0].PayloadFormat != "1.0" {
+			t.Errorf("payload format = %q, want 1.0 — a REST API always uses 1.0",
+				got.Routes[0].PayloadFormat)
+		}
+	})
+
+	t.Run("HTTP API v2 — in the list", func(t *testing.T) {
+		d := discovererFixture()
+		d.Lambda.(*fakeLambda).policy = policyFor("httpapi999")
+		d.APIGW.(*fakeAPIGW).apis = []apigwtypes.Api{
+			{ApiId: aws.String("httpapi999"), ProtocolType: apigwtypes.ProtocolTypeHttp},
+		}
+
+		got, err := d.Discover(context.Background(), "createOrder")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Routes) != 1 || got.Routes[0].PayloadFormat != "2.0" {
+			t.Errorf("routes = %+v, want one route with payload format 2.0", got.Routes)
+		}
+	})
+
+	// If the list can't be read, pulse must not silently pick either one.
+	t.Run("cannot check — says so instead of assuming", func(t *testing.T) {
+		d := discovererFixture()
+		d.Lambda.(*fakeLambda).policy = policyFor("restapi123")
+		d.APIGW.(*fakeAPIGW).errs["GetApis"] = &smithy.OperationError{
+			ServiceID: "API Gateway V2", OperationName: "GetApis", Err: &deniedAPIError{},
+		}
+
+		if _, err := d.Discover(context.Background(), "createOrder"); err != nil {
+			t.Fatal(err)
+		}
+		note := notesText(d.Degraded)
+		if !strings.Contains(note, "payload format") || !strings.Contains(note, "1.0") {
+			t.Errorf("an unresolvable payload format must be reported with the fix, got: %s", note)
+		}
+	})
+}
