@@ -348,7 +348,9 @@ func printReadPolicy(out io.Writer) {
 		if a.Optional {
 			note += " (optional — import degrades without it)"
 		}
-		fmt.Fprintf(out, "    %-32s %s\n", ui.Accent(a.Action), ui.Dim(note))
+		// Pad the plain name: %-32s on a colored string counts the ANSI
+		// bytes toward the width, so the longest action loses its column.
+		fmt.Fprintf(out, "    %s %s\n", ui.Accent(fmt.Sprintf("%-30s", a.Action)), ui.Dim(note))
 	}
 
 	fmt.Fprintf(out, "\n  %s\n\n", ui.Bold("attach this to the identity you import with"))
