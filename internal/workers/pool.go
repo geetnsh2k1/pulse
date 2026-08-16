@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,6 +184,56 @@ func (p *pool) spawnLocked() {
 	go w.start(p)
 }
 
+// layerDir is where `pulse import aws` unpacks a function's Lambda layers,
+// relative to its code directory. Kept in step with importer.LayerDir — the
+// convention is the wiring, so pulse.yaml needs no new field.
+const layerDir = "_layers"
+
+// layerPaths puts an imported function's layers on the runtime's module path,
+// mirroring AWS: layers are mounted at /opt, with /opt/python (and its
+// site-packages) on PYTHONPATH and /opt/nodejs/node_modules on NODE_PATH.
+// Without this, a function whose dependencies live in a layer imports fine in
+// production and fails locally on the first line.
+func layerPaths(taskRoot string) []string {
+	root := filepath.Join(taskRoot, layerDir)
+	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+		return nil
+	}
+
+	var pyPaths []string
+	if py := filepath.Join(root, "python"); isDir(py) {
+		pyPaths = append(pyPaths, py)
+		// AWS also honours the versioned site-packages layout layers are often
+		// built with; add whichever ones this layer actually contains.
+		if matches, err := filepath.Glob(filepath.Join(py, "lib", "python*", "site-packages")); err == nil {
+			for _, m := range matches {
+				if isDir(m) {
+					pyPaths = append(pyPaths, m)
+				}
+			}
+		}
+	}
+
+	var out []string
+	if len(pyPaths) > 0 {
+		// Prepend, so a layer can shadow a system package the way it does on
+		// Lambda, and keep any PYTHONPATH the user set.
+		if existing := os.Getenv("PYTHONPATH"); existing != "" {
+			pyPaths = append(pyPaths, existing)
+		}
+		out = append(out, "PYTHONPATH="+strings.Join(pyPaths, string(os.PathListSeparator)))
+	}
+	if node := filepath.Join(root, "nodejs", "node_modules"); isDir(node) {
+		out = append(out, "NODE_PATH="+node)
+	}
+	return out
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
 func (p *pool) workerEnv(workerID string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -203,6 +254,7 @@ func (p *pool) workerEnv(workerID string) []string {
 		"PULSE_WORKER_ID=" + workerID,
 		"PYTHONUNBUFFERED=1",
 	}
+	env = append(env, layerPaths(p.taskRoot)...)
 	if p.awsEndpoint != "" {
 		// Point AWS SDKs (boto3 ≥1.28, JS v3, CLI v2.13+) at the local
 		// façade. Everything a worker does stays on this machine.

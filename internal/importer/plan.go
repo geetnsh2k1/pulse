@@ -46,6 +46,7 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 		EnvNames:   envNames,
 		EnvValues:  fn.Env,
 		CodeURL:    fn.CodeURL,
+		Layers:     fn.Layers,
 		Provenance: Confirmed,
 	})
 
@@ -88,10 +89,28 @@ func BuildPlan(d Discovery, project string) (*Plan, error) {
 				") — it should behave the same, and your machine needs an interpreter for it",
 		})
 	}
-	if len(fn.Layers) > 0 {
+	// Layers hold the dependencies the package doesn't ship, so pulse merges
+	// them the way AWS does — but only the ones it could actually read.
+	var merged []string
+	var unread []Layer
+	for _, l := range fn.Layers {
+		if l.CodeURL != "" {
+			merged = append(merged, l.Name)
+		} else {
+			unread = append(unread, l)
+		}
+	}
+	if len(merged) > 0 {
 		p.Warnings = append(p.Warnings, Note{
-			Subject: fmt.Sprintf("%d layer(s)", len(fn.Layers)),
-			Detail:  "layer contents are NOT merged — if dependencies live in a layer, install them into the function's directory before running",
+			Subject: fmt.Sprintf("%s merged (%s)", plural(len(merged), "layer", "layers"), strings.Join(merged, ", ")),
+			Detail: "unpacked beside the function and put on the module path, the way AWS mounts them at /opt — " +
+				"so the packages they carry are importable locally",
+		})
+	}
+	for _, l := range unread {
+		p.Unsupported = append(p.Unsupported, Note{
+			Subject: "layer " + l.Name + " not readable",
+			Detail:  l.why() + " — the packages it carries will be missing locally",
 		})
 	}
 	if fn.VPCAttached {

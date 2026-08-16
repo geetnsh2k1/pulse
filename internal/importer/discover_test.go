@@ -25,7 +25,21 @@ type fakeLambda struct {
 	list     []lambda.ListFunctionsOutput // one entry per page
 	mappings *lambda.ListEventSourceMappingsOutput
 	policy   *lambda.GetPolicyOutput
+	layers   map[string]string // layer arn -> download url
 	errs     map[string]error
+}
+
+func (f *fakeLambda) GetLayerVersionByArn(_ context.Context, in *lambda.GetLayerVersionByArnInput, _ ...func(*lambda.Options)) (*lambda.GetLayerVersionByArnOutput, error) {
+	if err := f.errs["GetLayerVersionByArn"]; err != nil {
+		return nil, err
+	}
+	url, ok := f.layers[aws.ToString(in.Arn)]
+	if !ok {
+		return nil, errors.New("ResourceNotFoundException: no such layer")
+	}
+	return &lambda.GetLayerVersionByArnOutput{
+		Content: &lambdatypes.LayerVersionContentOutput{Location: aws.String(url), CodeSize: 1024},
+	}, nil
 }
 
 func (f *fakeLambda) GetFunction(context.Context, *lambda.GetFunctionInput, ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
@@ -182,6 +196,15 @@ func lambdaFixture() *fakeLambda {
 			"Condition":{"ArnLike":{"AWS:SourceArn":"arn:aws:execute-api:eu-west-1:1234:abc123/*/POST/orders"}}}]}`)},
 		errs: map[string]error{},
 	}
+}
+
+// discoverWith is discovererFixture with the Lambda side swapped, for tests
+// that only care about how one scripted Lambda response is handled.
+func discoverWith(t *testing.T, l *fakeLambda) *Discoverer {
+	t.Helper()
+	d := discovererFixture()
+	d.Lambda = l
+	return d
 }
 
 func discovererFixture() *Discoverer {
@@ -638,4 +661,56 @@ func TestRoutesFromPolicyResolveTheRealPayloadFormat(t *testing.T) {
 			t.Errorf("an unresolvable payload format must be reported with the fix, got: %s", note)
 		}
 	})
+}
+
+// Layers hold the dependencies, so being unable to read one is the difference
+// between a project that runs and one that fails on its first import. It must
+// never fail the whole import, and it must record why so the plan can say.
+func TestDeniedLayerIsRecordedNotFatal(t *testing.T) {
+	l := lambdaFixture()
+	l.fn.Configuration.Layers = []lambdatypes.Layer{
+		{Arn: aws.String("arn:aws:lambda:eu-west-1:1:layer:deps:9")},
+	}
+	l.errs["GetLayerVersionByArn"] = &smithy.GenericAPIError{
+		Code:    "AccessDeniedException",
+		Message: "User is not authorized to perform: lambda:GetLayerVersion",
+	}
+
+	d, err := discoverWith(t, l).Discover(context.Background(), "createOrder")
+	if err != nil {
+		t.Fatalf("a denied layer must not fail the import: %v", err)
+	}
+	got := d.Function
+	if len(got.Layers) != 1 {
+		t.Fatalf("the layer should still be listed, got %+v", got.Layers)
+	}
+	if got.Layers[0].CodeURL != "" {
+		t.Error("a denied layer must not look downloadable")
+	}
+	if !strings.Contains(got.Layers[0].Unreadable, "lambda:GetLayerVersion") {
+		t.Errorf("the reason must name the permission, got %q", got.Layers[0].Unreadable)
+	}
+}
+
+// The happy path: a readable layer comes back with somewhere to download it.
+func TestLayerDownloadURLIsResolved(t *testing.T) {
+	l := lambdaFixture()
+	arn := "arn:aws:lambda:eu-west-1:1:layer:deps:9"
+	l.fn.Configuration.Layers = []lambdatypes.Layer{{Arn: aws.String(arn)}}
+	l.layers = map[string]string{arn: "https://presigned/deps.zip"}
+
+	d, err := discoverWith(t, l).Discover(context.Background(), "createOrder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Function
+	if len(got.Layers) != 1 || got.Layers[0].CodeURL != "https://presigned/deps.zip" {
+		t.Errorf("layers = %+v", got.Layers)
+	}
+	if got.Layers[0].Name != "deps" || got.Layers[0].Version != "9" {
+		t.Errorf("name/version parsed from the ARN = %q/%q", got.Layers[0].Name, got.Layers[0].Version)
+	}
+	if got.Layers[0].Unreadable != "" {
+		t.Errorf("a readable layer carries no reason, got %q", got.Layers[0].Unreadable)
+	}
 }

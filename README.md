@@ -122,9 +122,16 @@ anything.
 no mutating AWS API is reachable from the command, so it cannot affect
 production. Environment *values* are not copied unless you pass
 `--with-values`; every value lands in `.env` as `CHANGE_ME`. Anything AWS
-has that pulse can't represent — layers, VPC config, secondary indexes,
+has that pulse can't represent — VPC config, secondary indexes,
 S3/SNS/EventBridge triggers — is printed and written to `IMPORT-NOTES.md`
 beside the project. Nothing is dropped silently.
+
+**Layers come with it.** Most teams ship their dependencies as a Lambda
+layer, so a function that imported cleanly used to fail on its first
+`import`. pulse downloads each layer and unpacks it beside the function on
+the search paths AWS mounts it on (`/opt/python`, `/opt/nodejs/node_modules`),
+so the code runs as deployed. Reading a layer needs `lambda:GetLayerVersion`;
+without it the import still succeeds and says which layer it couldn't read.
 
 It finishes the job, too: dependencies are installed the way `pulse init`
 installs them, so the next step is `pulse start`.

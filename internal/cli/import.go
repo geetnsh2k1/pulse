@@ -52,9 +52,13 @@ Environment values are NOT copied by default (Lambda variables routinely
 hold live API keys) — every value is written to .env as CHANGE_ME. Pass
 --with-values when you actually want the real ones on your disk.
 
-Anything pulse can't represent — layers, VPC config, S3/SNS/EventBridge
-triggers, secondary indexes — is printed and written to IMPORT-NOTES.md
-beside the project. Nothing is dropped silently.`,
+Lambda layers come across too: pulse downloads each one and unpacks it
+beside the function, on the same search paths AWS mounts it on, so a
+function whose dependencies ship in a layer runs without a pip install.
+
+Anything pulse can't represent — VPC config, S3/SNS/EventBridge triggers,
+secondary indexes — is printed and written to IMPORT-NOTES.md beside the
+project. Nothing is dropped silently.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `  pulse import aws                          pick a profile, region and function
   pulse import aws createOrder              import that function

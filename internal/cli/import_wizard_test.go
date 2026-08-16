@@ -234,7 +234,7 @@ func TestPreviewPlanIsHonestAboutEverything(t *testing.T) {
 		Name: "createOrder", Runtime: "python3.12", Handler: "handler.handler",
 		TimeoutSec: 10, MemoryMB: 512, PackageType: "Zip", CodeSize: 4 << 20,
 		Env:    map[string]string{"API_KEY": "secret", "TABLE_NAME": "orders"},
-		Layers: []string{"arn:aws:lambda:eu-west-1:1:layer:deps:3"},
+		Layers: []importer.Layer{{ARN: "arn:aws:lambda:eu-west-1:1:layer:deps:3", Name: "deps", CodeURL: "https://presigned/layer.zip"}},
 	}
 	d := importer.Discovery{
 		Region:   "eu-west-1",

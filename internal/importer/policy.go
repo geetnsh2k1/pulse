@@ -35,6 +35,7 @@ func ReadActions() []ReadAction {
 		{Action: "lambda:GetFunction", Why: "runtime, handler, memory, timeout, env var names, code location"},
 		{Action: "lambda:ListEventSourceMappings", Why: "which queues trigger the function"},
 		{Action: "lambda:GetPolicy", Why: "which API Gateway routes invoke it"},
+		{Action: "lambda:GetLayerVersion", Why: "download the layers holding the function's dependencies, so it can actually run locally", Optional: true},
 
 		{Action: "sqs:ListQueues", Why: "offer real queue names instead of asking you to type them"},
 		{Action: "sqs:GetQueueUrl", Why: "resolve a queue name to its URL"},

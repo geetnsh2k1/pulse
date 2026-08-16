@@ -59,8 +59,15 @@ func serveZip(t *testing.T, body []byte) string {
 // writePlan is the standard fixture: one function with a route, a queue and a
 // table, i.e. every section of pulse.yaml exercised at once.
 func writePlan(t *testing.T, codeURL string) *Plan {
+	return writePlanWith(t, codeURL)
+}
+
+// writePlanWith is writePlan for the layer cases: layers have to be present in
+// discovery, since that is where the plan decides what to say about them.
+func writePlanWith(t *testing.T, codeURL string, layers ...Layer) *Plan {
 	t.Helper()
 	fn := zipFn()
+	fn.Layers = layers
 	fn.CodeURL = codeURL
 	fn.Env["API_KEY"] = "sk-live-do-not-leak"
 	d := Discovery{
@@ -508,5 +515,59 @@ func TestGeneratedDotEnvSurvivesRealWorldValues(t *testing.T) {
 		if got[k] != want {
 			t.Errorf("%s round-tripped as %q, want %q", k, got[k], want)
 		}
+	}
+}
+
+// Layers are how most teams ship dependencies, so a function with layers used
+// to import cleanly and then fail on its first line. pulse now unpacks them
+// beside the function the way AWS mounts them at /opt.
+func TestWriteMergesLayers(t *testing.T) {
+	layerURL := serveZip(t, zipOf(t, map[string]string{
+		"python/pymongo/__init__.py":                     "VERSION = '4.17'\n",
+		"python/lib/python3.13/site-packages/slack/x.py": "OK = True\n",
+	}))
+	code := serveZip(t, zipOf(t, map[string]string{"handler.py": "import pymongo\n"}))
+
+	p := writePlanWith(t, code, Layer{
+		ARN: "arn:aws:lambda:eu-west-1:1:layer:deps:9", Name: "deps", CodeURL: layerURL,
+	})
+
+	dest := filepath.Join(t.TempDir(), "shop")
+	if _, err := p.Write(context.Background(), WriteOptions{Dest: dest}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Unpacked under the function, preserving the layout the runtime expects.
+	for _, want := range []string{
+		"functions/createOrder/" + LayerDir + "/python/pymongo/__init__.py",
+		"functions/createOrder/" + LayerDir + "/python/lib/python3.13/site-packages/slack/x.py",
+	} {
+		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(want))); err != nil {
+			t.Errorf("missing %s: %v", want, err)
+		}
+	}
+	// Vendored dependencies are not the user's source: they stay out of git.
+	if !strings.Contains(read(t, dest, ".gitignore"), LayerDir) {
+		t.Errorf(".gitignore should exclude %s:\n%s", LayerDir, read(t, dest, ".gitignore"))
+	}
+	// And the plan says what happened rather than leaving it to be discovered.
+	notes := read(t, dest, "IMPORT-NOTES.md")
+	if !strings.Contains(notes, "merged") || !strings.Contains(notes, "deps") {
+		t.Errorf("IMPORT-NOTES.md should record the merge:\n%s", notes)
+	}
+}
+
+// A layer pulse couldn't read must be called out with the permission that
+// would fix it — not silently skipped, which would look like a working import
+// that mysteriously can't import its own dependencies.
+func TestUnreadableLayerIsReportedNotSkipped(t *testing.T) {
+	p := writePlanWith(t, "", Layer{ARN: "arn:…:layer:deps:9", Name: "deps"}) // no CodeURL
+
+	dest := filepath.Join(t.TempDir(), "shop")
+	if _, err := p.Write(context.Background(), WriteOptions{Dest: dest}); err != nil {
+		t.Fatalf("an unreadable layer must not fail the import: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "functions/createOrder", LayerDir)); err == nil {
+		t.Error("nothing should have been unpacked for an unreadable layer")
 	}
 }

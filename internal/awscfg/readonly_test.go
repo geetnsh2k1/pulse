@@ -161,8 +161,9 @@ func TestReadOnlyListIsExactlyWhatWeExpect(t *testing.T) {
 	got := strings.Join(ReadOnlyOperationNames(), ",")
 	want := strings.Join([]string{
 		"DescribeTable", "GetApis", "GetCallerIdentity", "GetFunction", "GetIntegration",
-		"GetPolicy", "GetQueueAttributes", "GetQueueUrl", "GetRolePolicy", "GetRoutes",
-		"ListEventSourceMappings", "ListFunctions", "ListQueues", "ListRolePolicies", "ListTables",
+		"GetLayerVersionByArn", "GetPolicy", "GetQueueAttributes", "GetQueueUrl", "GetRolePolicy",
+		"GetRoutes", "ListEventSourceMappings", "ListFunctions", "ListQueues", "ListRolePolicies",
+		"ListTables",
 	}, ",")
 	if got != want {
 		t.Errorf("the read-only list changed.\n got: %s\nwant: %s\n\n"+

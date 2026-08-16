@@ -207,7 +207,7 @@ func TestBuildPlanSQSExtrasAreFlagged(t *testing.T) {
 func TestBuildPlanCaveats(t *testing.T) {
 	conc := int32(20)
 	fn := zipFn()
-	fn.Layers = []string{"arn:aws:lambda:::layer:deps:3"}
+	fn.Layers = []Layer{{ARN: "arn:aws:lambda:::layer:deps:3", Name: "deps", CodeURL: "https://presigned/layer.zip"}}
 	fn.VPCAttached = true
 	fn.Concurrency = &conc
 
@@ -440,4 +440,53 @@ func TestBuildPlanAcceptsNewerRuntimeWithACaveat(t *testing.T) {
 	if !strings.Contains(notes, "interpreter") {
 		t.Errorf("the note should mention needing a local interpreter, got: %s", notes)
 	}
+}
+
+// The note has to distinguish a layer pulse merged from one it couldn't read:
+// the first means the function should run, the second means it won't, and the
+// user needs to know which they have.
+func TestBuildPlanDistinguishesMergedAndUnreadableLayers(t *testing.T) {
+	fn := zipFn()
+	fn.Layers = []Layer{
+		{ARN: "arn:…:layer:deps:9", Name: "deps", CodeURL: "https://presigned/deps.zip"},
+		// Discovery knows WHY, and the reason is not always a permission —
+		// telling someone to grant an IAM action for a layer another account
+		// never shared with them is advice that cannot work.
+		{ARN: "arn:…:layer:vendor:2", Name: "vendor", Unreadable: "that layer version no longer exists"},
+		{ARN: "arn:…:layer:secret:2", Name: "secret"}, // no reason recorded
+	}
+	p := mustPlan(t, Discovery{Function: fn}, "shop")
+
+	warnings, unsupported := notesText(p.Warnings), notesText(p.Unsupported)
+	if !strings.Contains(warnings, "merged") || !strings.Contains(warnings, "deps") {
+		t.Errorf("a merged layer should be reported as merged, got: %s", warnings)
+	}
+	// Each unreadable layer gets its own note carrying its own reason, so
+	// two layers that failed differently don't get one blended explanation.
+	for _, c := range []struct{ layer, reason string }{
+		{"vendor", "no longer exists"},       // the reason discovery recorded
+		{"secret", "lambda:GetLayerVersion"}, // none recorded — fall back to the permission
+	} {
+		n := findNote(p.Unsupported, c.layer)
+		if n == nil {
+			t.Errorf("no note for layer %s, got: %s", c.layer, unsupported)
+			continue
+		}
+		if !strings.Contains(n.Detail, c.reason) {
+			t.Errorf("note for %s should explain %q, got %q", c.layer, c.reason, n.Detail)
+		}
+	}
+	if strings.Contains(warnings, "secret") || strings.Contains(warnings, "vendor") {
+		t.Error("an unreadable layer must not be described as merged")
+	}
+}
+
+// findNote returns the note whose subject mentions want, or nil.
+func findNote(notes []Note, want string) *Note {
+	for i := range notes {
+		if strings.Contains(notes[i].Subject, want) {
+			return &notes[i]
+		}
+	}
+	return nil
 }

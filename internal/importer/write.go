@@ -195,6 +195,30 @@ func (p *Plan) writeInto(ctx context.Context, root string, o WriteOptions) ([]st
 		for _, n := range names {
 			files = append(files, filepath.Join(f.CodeDir, n))
 		}
+
+		// Layers carry the dependencies the package doesn't ship. AWS mounts
+		// them at /opt and puts their language directories on the search path;
+		// pulse unpacks them beside the function and the worker does the same,
+		// so an imported function can import what it imports in production.
+		for _, l := range f.Layers {
+			if l.CodeURL == "" {
+				continue // unreadable — the plan already says so, loudly
+			}
+			layerPkg, err := FetchCode(ctx, o.client(), l.Name, l.CodeURL)
+			if err != nil {
+				return nil, fmt.Errorf("fetching layer %s: %w", l.Name, err)
+			}
+			// Layers merge into one tree in ARN order, exactly as AWS overlays
+			// them onto /opt, so a later layer wins the same way it would there.
+			written, err := layerPkg.extractTo(filepath.Join(root, f.CodeDir, LayerDir))
+			layerPkg.Close()
+			if err != nil {
+				return nil, fmt.Errorf("unpacking layer %s: %w", l.Name, err)
+			}
+			for _, n := range written {
+				files = append(files, filepath.Join(f.CodeDir, LayerDir, n))
+			}
+		}
 	}
 	return files, nil
 }
@@ -352,7 +376,13 @@ func yamlKey(s string) string {
 	return yamlScalar(s)
 }
 
+// LayerDir is where an imported function's layers are unpacked, relative to
+// its code directory. The workers package looks for the same name — that
+// convention is the whole wiring, so neither side needs a config field.
+const LayerDir = "_layers"
+
 const importGitignore = `.pulse/
+_layers/
 node_modules/
 __pycache__/
 .venv/

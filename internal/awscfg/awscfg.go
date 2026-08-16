@@ -312,7 +312,18 @@ func IAMAction(service, operation string) string {
 	if operation == "" {
 		return ""
 	}
+	// A handful of operations are authorized under a different name than they
+	// are called by. Asking for a permission that doesn't exist wastes the
+	// admin's time as surely as asking for the wrong one.
+	if action, ok := renamedActions[svc+":"+operation]; ok {
+		return action
+	}
 	return svc + ":" + operation
+}
+
+// renamedActions maps SDK operation → the IAM action that actually governs it.
+var renamedActions = map[string]string{
+	"lambda:GetLayerVersionByArn": "lambda:GetLayerVersion",
 }
 
 // proxyEnv names the proxy variable actually in play, so the fix can point at

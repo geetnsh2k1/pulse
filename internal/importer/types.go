@@ -40,7 +40,7 @@ type Function struct {
 	PackageType string // "Zip" or "Image"
 	CodeSize    int64  // bytes, as reported by AWS
 	CodeURL     string // presigned download URL (empty for images)
-	Layers      []string
+	Layers      []Layer
 	VPCAttached bool
 	Concurrency *int32 // reserved concurrency, if set
 }
@@ -52,6 +52,24 @@ type EventSource struct {
 	BatchSize int
 	Enabled   bool
 	HasFilter bool // FilterCriteria set — pulse can't express these yet
+}
+
+// Layer is a Lambda layer attached to the function. AWS unzips layers into
+// /opt and puts their language directories on the runtime's search path, which
+// is why a deployed function can import packages its own package never ships.
+// CodeURL is a presigned link, same as the function's own code.
+type Layer struct {
+	ARN      string
+	Name     string
+	Version  string
+	CodeURL  string
+	CodeSize int64
+	// Unreadable is why pulse could not fetch this layer, phrased for a
+	// human and already naming the fix. Empty when CodeURL is set. It is
+	// kept per-layer because the cause varies — a missing permission, a
+	// deleted version, a layer owned by an account that never shared it —
+	// and each needs different advice.
+	Unreadable string
 }
 
 // HTTPRoute is one API Gateway route pointing at the function.
@@ -143,6 +161,7 @@ type PlannedFunction struct {
 	EnvNames   []string
 	EnvValues  map[string]string
 	CodeURL    string
+	Layers     []Layer
 	Provenance Provenance
 }
 
@@ -207,4 +226,15 @@ func (r *Refusal) Error() string {
 		return r.Reason
 	}
 	return r.Reason + "\n    fix: " + r.Fix
+}
+
+// why explains an unreadable layer. Discovery normally supplies the reason;
+// the fallback covers layers that arrived without one (a plan built by hand,
+// or a future path that forgets to set it) and still points somewhere useful
+// rather than printing nothing.
+func (l Layer) why() string {
+	if l.Unreadable != "" {
+		return l.Unreadable
+	}
+	return "pulse couldn't download it — check lambda:GetLayerVersion (`pulse import aws --policy`)"
 }

@@ -41,6 +41,7 @@ type (
 		ListFunctions(context.Context, *lambda.ListFunctionsInput, ...func(*lambda.Options)) (*lambda.ListFunctionsOutput, error)
 		ListEventSourceMappings(context.Context, *lambda.ListEventSourceMappingsInput, ...func(*lambda.Options)) (*lambda.ListEventSourceMappingsOutput, error)
 		GetPolicy(context.Context, *lambda.GetPolicyInput, ...func(*lambda.Options)) (*lambda.GetPolicyOutput, error)
+		GetLayerVersionByArn(context.Context, *lambda.GetLayerVersionByArnInput, ...func(*lambda.Options)) (*lambda.GetLayerVersionByArnOutput, error)
 	}
 	SQSAPI interface {
 		ListQueues(context.Context, *sqs.ListQueuesInput, ...func(*sqs.Options)) (*sqs.ListQueuesOutput, error)
@@ -260,6 +261,11 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 
 	wg.Wait()
 
+	// Layers carry the dependencies a deployment package doesn't ship, so a
+	// function with layers usually cannot even be imported without them. Read
+	// their download locations here; the writer merges them.
+	d.resolveLayers(ctx, &out.Function)
+
 	// The execution role sharpens resource guesses, and is the read most
 	// likely to be denied — plenty of orgs lock IAM down. Optional by design.
 	if fn.RoleARN != "" && d.IAM != nil {
@@ -287,6 +293,35 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 		out.AllQueues = mergeQueue(out.AllQueues, full)
 	}
 	return out, nil
+}
+
+// layerNameVersion splits arn:aws:lambda:region:acct:layer:NAME:VERSION.
+func layerNameVersion(arn string) (name, version string) {
+	parts := strings.Split(arn, ":")
+	if len(parts) < 8 {
+		return arnTail(arn), ""
+	}
+	return parts[6], parts[7]
+}
+
+// resolveLayers turns the ARNs on a function into downloadable layers. A
+// denial here is not fatal — the import proceeds and says plainly that the
+// dependencies living in those layers will be missing locally, and which
+// permission would fix it.
+func (d *Discoverer) resolveLayers(ctx context.Context, fn *Function) {
+	for i := range fn.Layers {
+		out, err := d.Lambda.GetLayerVersionByArn(ctx, &lambda.GetLayerVersionByArnInput{
+			Arn: aws.String(fn.Layers[i].ARN),
+		})
+		if err != nil {
+			fn.Layers[i].Unreadable = whyUnreadable(err)
+			continue
+		}
+		if out.Content != nil {
+			fn.Layers[i].CodeURL = aws.ToString(out.Content.Location)
+			fn.Layers[i].CodeSize = out.Content.CodeSize
+		}
+	}
 }
 
 func (d *Discoverer) getFunction(ctx context.Context, name string) (Function, error) {
@@ -319,7 +354,9 @@ func (d *Discoverer) getFunction(ctx context.Context, name string) (Function, er
 		fn.CodeURL = aws.ToString(res.Code.Location)
 	}
 	for _, l := range c.Layers {
-		fn.Layers = append(fn.Layers, aws.ToString(l.Arn))
+		arn := aws.ToString(l.Arn)
+		name, version := layerNameVersion(arn)
+		fn.Layers = append(fn.Layers, Layer{ARN: arn, Name: name, Version: version})
 	}
 	if c.VpcConfig != nil && len(c.VpcConfig.SubnetIds) > 0 {
 		fn.VPCAttached = true

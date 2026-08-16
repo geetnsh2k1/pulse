@@ -39,6 +39,7 @@ var ReadOnlyOperations = map[string]bool{
 	"ListFunctions":           true,
 	"ListEventSourceMappings": true,
 	"GetPolicy":               true,
+	"GetLayerVersionByArn":    true,
 
 	// sqs
 	"ListQueues":         true,
