@@ -13,15 +13,57 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/geetnsh2k1/pulse/internal/dotenv"
 )
 
 // FileName is the project definition file pulse looks for.
 const FileName = "pulse.yaml"
 
-// SupportedRuntimes is the set of Lambda runtimes certified for the MVP.
-var SupportedRuntimes = []string{
-	"nodejs18.x", "nodejs20.x", "nodejs22.x",
-	"python3.9", "python3.10", "python3.11", "python3.12",
+// DotEnvFile holds local, uncommitted values (secrets, per-machine
+// overrides) beside pulse.yaml. Optional — projects work without it.
+const DotEnvFile = ".env"
+
+// Placeholder is what an unfilled value looks like. `pulse import aws` writes
+// it for every environment value it deliberately didn't copy, and the runtime
+// recognizes it: a resource named "CHANGE_ME" is not a missing resource, it's
+// an unfilled .env — and saying so is the difference between a five-second fix
+// and a confusing hunt.
+const Placeholder = "CHANGE_ME"
+
+// PlaceholderKeys lists the variables still left at Placeholder, sorted, so
+// `pulse start` and `pulse doctor` can warn before a function fails.
+func (c *Config) PlaceholderKeys() []string {
+	var out []string
+	for k, v := range c.DotEnv {
+		if v == Placeholder {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ReservedEnvKeys are variables a project may not set. AWS Lambda rejects
+// these in function configuration, and pulse has the same reason to: they
+// carry the runtime protocol and the local AWS façade. Letting a project
+// file override AWS_ENDPOINT_URL would quietly point the SDK away from the
+// local cloud — exactly the kind of silent wrongness pulse refuses.
+var ReservedEnvKeys = map[string]bool{
+	// reserved by AWS Lambda itself
+	"_HANDLER": true, "_X_AMZN_TRACE_ID": true,
+	"AWS_REGION": true, "AWS_DEFAULT_REGION": true, "AWS_EXECUTION_ENV": true,
+	"AWS_LAMBDA_FUNCTION_NAME": true, "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": true,
+	"AWS_LAMBDA_FUNCTION_VERSION": true, "AWS_LAMBDA_INITIALIZATION_TYPE": true,
+	"AWS_LAMBDA_LOG_GROUP_NAME": true, "AWS_LAMBDA_LOG_STREAM_NAME": true,
+	"AWS_LAMBDA_RUNTIME_API": true, "LAMBDA_TASK_ROOT": true,
+	"LAMBDA_RUNTIME_DIR": true,
+	"AWS_ACCESS_KEY":     true, "AWS_ACCESS_KEY_ID": true,
+	"AWS_SECRET_KEY": true, "AWS_SECRET_ACCESS_KEY": true,
+	"AWS_SESSION_TOKEN": true,
+	// pulse's local wiring
+	"AWS_ENDPOINT_URL": true, "AWS_ENDPOINT_URL_SQS": true,
+	"AWS_ENDPOINT_URL_DYNAMODB": true, "PULSE_WORKER_ID": true,
 }
 
 // Bounds mirroring AWS Lambda's own limits.
@@ -42,6 +84,12 @@ type Config struct {
 
 	// Root is the absolute path of the project directory (dir of pulse.yaml).
 	Root string `yaml:"-" json:"root"`
+
+	// DotEnv holds variables read from .env next to pulse.yaml. It is never
+	// serialized (yaml:"-") — secrets must not leak into the committed file
+	// when `pulse add`/`remove` rewrite it. Functions receive these as a
+	// base layer; a function's own `env:` overrides them.
+	DotEnv map[string]string `yaml:"-" json:"-"`
 	// Path is the absolute path of the loaded pulse.yaml.
 	Path string `yaml:"-" json:"-"`
 }
@@ -61,6 +109,12 @@ type Function struct {
 	Timeout int               `yaml:"timeout" json:"timeout"` // seconds; enforced at invoke
 	Memory  int               `yaml:"memory" json:"memory"`   // MB; env/context parity in MVP
 	Env     map[string]string `yaml:"env" json:"env,omitempty"`
+	// Layers records the Lambda layer ARNs this function was deployed with.
+	// The unpacked bytes live in <codeDir>/_layers, which is gitignored, so
+	// this is what survives a clone — without it a checkout has no way to
+	// know which layers to re-fetch, and the function fails on an import
+	// with nothing to point at.
+	Layers []string `yaml:"layers,omitempty" json:"layers,omitempty"`
 }
 
 // Trigger wires an event source to a function. Only the fields belonging to
@@ -180,6 +234,19 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// .env sits beside pulse.yaml and holds what pulse.yaml must not: local
+	// secrets. Kept separate from Function.Env so a value can never be
+	// written back into the committed file (see DotEnv).
+	vars, err := dotenv.Load(filepath.Join(cfg.Root, DotEnvFile))
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range sortedKeys(vars) {
+		if ReservedEnvKeys[k] {
+			return nil, fmt.Errorf("%s: %q is reserved by the Lambda runtime and cannot be set (AWS rejects it too) — remove it; pulse sets it for you", DotEnvFile, k)
+		}
+	}
+	cfg.DotEnv = vars
 	return cfg, nil
 }
 

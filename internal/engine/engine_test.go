@@ -281,3 +281,100 @@ func TestStaleRunfileIsCleaned(t *testing.T) {
 		t.Error("stale runfile was not cleaned up")
 	}
 }
+
+// `pulse start --port N` is an explicit runtime choice, and applyConfig
+// re-reads pulse.yaml — which knows nothing about the flag. Without the
+// override surviving, the API silently moved to the file's port on the first
+// hot-apply and every client the user had open broke.
+func TestPortOverrideSurvivesConfigReload(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "fn"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fn", "index.mjs"),
+		[]byte("export const handler = async () => ({});"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two free ports: one the file asks for, one the "flag" overrides it with.
+	freePort := func() int {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		return l.Addr().(*net.TCPAddr).Port
+	}
+	filePort, flagPort := freePort(), freePort()
+
+	yaml := fmt.Sprintf(`
+project: portoverride
+api: { port: %d }
+functions:
+  hello:
+    runtime: nodejs20.x
+    handler: index.handler
+    codeDir: fn
+triggers:
+  - { type: http, method: GET, path: /one, function: hello }
+`, filePort)
+	cfgPath := filepath.Join(root, "pulse.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.API.Port = flagPort // what `pulse start --port` does
+
+	st, err := store.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	e := New(cfg, st)
+	e.PortOverride = flagPort
+	if err := e.Start(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown(context.Background())
+
+	want := fmt.Sprintf("http://localhost:%d", flagPort)
+	if got := e.APIURL(); got != want {
+		t.Fatalf("api url = %q, want %q", got, want)
+	}
+
+	// Any save triggers a reload; the port must not move.
+	if err := os.WriteFile(cfgPath,
+		[]byte(yaml+"  - { type: http, method: POST, path: /two, function: hello }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the reload to settle (the gateway is briefly down mid-swap),
+	// then assert where the API ended up.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		resp, err := http.Get(e.ControlAddr() + "/api/routes")
+		if err == nil {
+			var routes []map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&routes)
+			resp.Body.Close()
+			if len(routes) == 2 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("config never reloaded, so the port claim is unproven")
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if got := e.APIURL(); got != want {
+		t.Fatalf("after reload api url = %q, want %q — the --port override was lost", got, want)
+	}
+	if resp, err := http.Get(want + "/one"); err != nil {
+		t.Fatalf("the api is no longer listening on the overridden port: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+}

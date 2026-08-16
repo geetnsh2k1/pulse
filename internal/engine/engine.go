@@ -49,6 +49,12 @@ type Engine struct {
 	// happenings like hot reloads and config applies. Set before Start.
 	OnEvent func(msg string)
 
+	// PortOverride is `pulse start --port N`. It has to outlive a config
+	// reload: applyConfig re-reads pulse.yaml, which knows nothing about the
+	// flag, so without this the API silently moved back to the file's port
+	// mid-session and every client the user had open broke. Set before Start.
+	PortOverride int
+
 	// mu guards the swappable state below (config hot-apply).
 	mu       sync.RWMutex
 	cfg      *config.Config
@@ -224,8 +230,10 @@ func shutdownGateway(gw *gateway.Server) {
 	_ = gw.Shutdown(ctx)
 }
 
-// applyConfig hot-swaps the running config after a pulse.yaml save.
-func (e *Engine) applyConfig() {
+// applyConfig hot-swaps the running config after a pulse.yaml or .env save.
+// which names the file that changed, so the console says what the user just
+// edited rather than always blaming pulse.yaml.
+func (e *Engine) applyConfig(which string) {
 	e.mu.Lock()
 	if e.applying {
 		e.mu.Unlock()
@@ -241,14 +249,17 @@ func (e *Engine) applyConfig() {
 	}()
 
 	newCfg, err := config.Load(e.path)
+	if err == nil && e.PortOverride > 0 {
+		newCfg.API.Port = e.PortOverride // an explicit flag beats the file
+	}
 	if err != nil {
-		e.event("✗ pulse.yaml changed but has problems — keeping the current config:\n" +
-			strings.ReplaceAll(err.Error(), e.path, "pulse.yaml"))
-		e.sink.System("engine", "", "rejected pulse.yaml change: "+err.Error(), time.Now().UnixMilli())
+		e.event("✗ " + which + " changed but has problems — keeping the current config:\n" +
+			strings.ReplaceAll(err.Error(), e.path, config.FileName))
+		e.sink.System("engine", "", "rejected "+which+" change: "+err.Error(), time.Now().UnixMilli())
 		return
 	}
 
-	e.event("pulse.yaml changed — applying live…")
+	e.event(which + " changed — applying live…")
 	e.stopSubsystems()
 	if err := e.startSubsystems(newCfg); err != nil {
 		e.event(fmt.Sprintf("✗ couldn't apply the new config (%v) — rolling back", err))
@@ -411,7 +422,7 @@ func (e *Engine) celebrateFirstJob() {
 
 func (e *Engine) onCodeChange(functions []string, reason string) {
 	if functions == nil {
-		e.applyConfig()
+		e.applyConfig(reason) // reason is the file: pulse.yaml or .env
 		return
 	}
 	e.mu.RLock()

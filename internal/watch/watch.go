@@ -92,6 +92,7 @@ func (w *Watcher) loop() {
 
 	pendingFns := map[string]bool{}
 	configChanged := false
+	configReason := ""
 	changeCount := 0
 
 	for {
@@ -100,11 +101,24 @@ func (w *Watcher) loop() {
 			if !ok {
 				return
 			}
-			if ev.Op == fsnotify.Chmod || ignoredPath(ev.Name) {
+			if ev.Op == fsnotify.Chmod {
+				continue
+			}
+			// .env is checked before ignoredPath, which drops every dotfile:
+			// it is project input just like pulse.yaml, and re-applying it is
+			// the same operation (config.Load reads both, workers restart with
+			// the new environment). Without this, editing .env did nothing and
+			// the values a function saw were whatever they were at boot.
+			if w.isDotEnv(ev.Name) {
+				configChanged, configReason = true, config.DotEnvFile
+				timer.Reset(debounce)
+				continue
+			}
+			if ignoredPath(ev.Name) {
 				continue
 			}
 			if samePath(ev.Name, w.cfg.Path) {
-				configChanged = true
+				configChanged, configReason = true, config.FileName
 				timer.Reset(debounce)
 				continue
 			}
@@ -130,7 +144,7 @@ func (w *Watcher) loop() {
 
 		case <-timer.C:
 			if configChanged {
-				w.onChange(nil, "pulse.yaml")
+				w.onChange(nil, configReason)
 			}
 			if len(pendingFns) > 0 {
 				fns := make([]string, 0, len(pendingFns))
@@ -145,7 +159,7 @@ func (w *Watcher) loop() {
 				w.onChange(fns, reason)
 			}
 			pendingFns = map[string]bool{}
-			configChanged = false
+			configChanged, configReason = false, ""
 			changeCount = 0
 
 		case _, ok := <-w.fsw.Errors:
@@ -157,6 +171,12 @@ func (w *Watcher) loop() {
 			return
 		}
 	}
+}
+
+// isDotEnv reports whether this path is the project's own .env — the single
+// dotfile pulse treats as input rather than noise.
+func (w *Watcher) isDotEnv(path string) bool {
+	return samePath(path, filepath.Join(w.cfg.Root, config.DotEnvFile))
 }
 
 func ignoredPath(path string) bool {

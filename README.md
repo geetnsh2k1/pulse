@@ -68,6 +68,11 @@ Or grab a binary from the [releases page](https://github.com/geetnsh2k1/pulse/re
 > exists — a plain GET, no payload, no identifiers, silent offline.
 > Opt out any time with `PULSE_NO_UPDATE_CHECK=1`.
 
+**Secrets:** `pulse init` scaffolds a gitignored `.env` (real values) and a
+committed `.env.example` (the names). Every function receives `.env`; a
+function's own `env:` in pulse.yaml overrides it. Reserved Lambda variables
+are refused with a clear message, exactly as AWS refuses them.
+
 **Supported runtimes:** Python 3.10+ and Node 18+, on macOS and Linux
 (Windows via WSL2). Every push runs the full golden path — init → start →
 request → queue → worker → replay → deploy-ready — across that matrix in
@@ -98,6 +103,52 @@ That round trip was an API, a queue, a worker with retries, and a database —
 all local, all real SDK calls. `init` installed the dependencies; nothing to
 activate or configure.
 
+## Already deployed? Import it
+
+If your app is already in AWS, you don't start from a template:
+
+```bash
+pulse import aws                 # asks which profile, region and function
+pulse import aws createOrder     # or name it
+```
+
+pulse reads the function's configuration, its API Gateway routes and SQS
+triggers, the queues and tables it appears to use, and your real handler
+code — then writes a project you can `pulse start`. It uses the same
+credentials the `aws` CLI does, and prints the account before reading
+anything.
+
+**Read-only, always.** Import calls only `List*`, `Get*` and `Describe*` —
+no mutating AWS API is reachable from the command, so it cannot affect
+production. Environment *values* are not copied unless you pass
+`--with-values`; every value lands in `.env` as `CHANGE_ME`. Anything AWS
+has that pulse can't represent — VPC config, secondary indexes,
+S3/SNS/EventBridge triggers — is printed and written to `IMPORT-NOTES.md`
+beside the project. Nothing is dropped silently.
+
+**Layers come with it.** Most teams ship their dependencies as a Lambda
+layer, so a function that imported cleanly used to fail on its first
+`import`. pulse downloads each layer and unpacks it beside the function on
+the search paths AWS mounts it on (`/opt/python`, `/opt/nodejs/node_modules`),
+so the code runs as deployed. Reading a layer needs `lambda:GetLayerVersion`;
+without it the import still succeeds and says which layer it couldn't read.
+
+The unpacked bytes are gitignored — they're vendored, not your source — but
+the layer ARNs are recorded in `pulse.yaml`, so a fresh clone knows exactly
+what it's missing. `pulse start` there stops with the ARNs and one command,
+`pulse aws layers`, instead of a `ModuleNotFoundError` for a package nobody
+ever installed.
+
+It finishes the job, too: dependencies are installed the way `pulse init`
+installs them, so the next step is `pulse start`.
+
+```bash
+pulse import aws createOrder --dry-run   # show the plan, write nothing
+pulse import aws --policy                # the read-only IAM policy it needs
+```
+
+Details and limits in [the guide](docs/GUIDE.md#313-already-deployed--pulse-import-aws).
+
 ## What you get
 
 - **A sub-second inner loop.** Engine ready in ~100ms, warm invokes in
@@ -112,7 +163,8 @@ activate or configure.
 - **A live dashboard.** `pulse monitor` — functions with ✓/✗ counts, live
   queue depths, streaming filtered logs, and Enter-to-replay history.
 - **A CLI that teaches.** Run any command bare and it asks instead of
-  erroring. Errors ship their fix. `pulse doctor` checks your setup.
+  erroring. Errors ship their fix — an `AccessDenied` names the exact IAM
+  action and prints the policy to request. `pulse doctor` checks your setup.
   Tab completion knows *your* functions and queues.
 - **Honesty by design.** pulse does one workflow completely — CRUD +
   background jobs. Everything outside the subset fails loudly with a
@@ -137,7 +189,7 @@ run unchanged in real AWS.
 | Cold start to working | **~100 ms** | container per invoke | 10–30 s container |
 | Code change | save → done | mostly re-invoke | redeploy / hot-reload config |
 | Queue → worker → DLQ locally | **yes, out of the box** | no | yes, via deploy cycle |
-| Requirements | one 20 MB binary | Docker | Docker (GB-scale image) |
+| Requirements | one binary, no daemon | Docker | Docker (GB-scale image) |
 | Persistence across restarts | free, default | n/a | paid tier |
 
 Different tools for different jobs: LocalStack emulates ~100 AWS services

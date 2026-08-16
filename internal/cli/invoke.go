@@ -62,6 +62,9 @@ func runInvoke(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown function %q — this project has: %s",
 			function, strings.Join(cfg.FunctionNames(), ", "))
 	}
+	if err := requireLayers(cfg); err != nil {
+		return err
+	}
 
 	payload, err := resolvePayload()
 	if err != nil {

@@ -2,3 +2,6 @@
 node_modules/
 __pycache__/
 .venv/
+
+# local secrets and per-machine overrides — never commit
+.env

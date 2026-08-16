@@ -4,15 +4,77 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/spf13/cobra"
+
+	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
 // Generic interactive prompts — the init wizard's pattern, reusable by
 // every command that can ask instead of erroring. All prompts read from an
 // injected reader so tests can script answers.
+
+// promptIn returns the ONE buffered reader for this command's stdin.
+//
+// Two bufio.Readers over the same stream silently lose input: the first fills
+// its 4 KB buffer from the pipe and the second sees EOF. That broke
+// `printf '1\n1\n' | pulse import aws` — the profile picker read every line,
+// then the function picker reported "cancelled" — and it can bite a person at
+// a terminal too, by pasting several answers at once. Any command that asks
+// more than one question, or delegates to something else that asks, must
+// share this reader.
+func promptIn(cmd *cobra.Command) *bufio.Reader {
+	r := cmd.InOrStdin()
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	if sameReader(promptFor, r) && promptCached != nil {
+		return promptCached
+	}
+	promptFor, promptCached = r, bufio.NewReader(r)
+	return promptCached
+}
+
+var (
+	promptMu     sync.Mutex
+	promptFor    io.Reader
+	promptCached *bufio.Reader
+)
+
+// sameReader compares two readers without risking the panic that comparing
+// non-comparable dynamic types would cause.
+func sameReader(a, b io.Reader) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
+// suggestion turns config.DidYouMean's parenthetical into a clause that can
+// stand on its own inside a fix line.
+func suggestion(input string, candidates []string) string {
+	s := strings.TrimSpace(config.DidYouMean(input, candidates))
+	return strings.TrimSuffix(strings.TrimPrefix(s, "("), ")")
+}
+
+// clause joins the non-empty parts of a fix with pulse's separator.
+func clause(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, strings.TrimSpace(p))
+		}
+	}
+	return strings.Join(kept, " · ")
+}
 
 // pickOption is one numbered choice.
 type pickOption struct {
@@ -50,6 +112,89 @@ func askPick(in *bufio.Reader, out io.Writer, question string, options []pickOpt
 		}
 		fmt.Fprintf(out, "  %s answer with a number 1-%d\n", ui.Err("✗"), len(options))
 	}
+}
+
+// multiOption is one toggleable choice in a checklist.
+type multiOption struct {
+	label   string
+	desc    string // dim explanation — for guesses, the evidence
+	checked bool   // the default answer
+}
+
+// askMultiPick renders a checklist and lets the user toggle entries. Enter
+// accepts what is shown, which is the point: pulse pre-checks what it has
+// strong evidence for, so the common case costs one keystroke and the
+// uncertain items are still visible with their reasons.
+func askMultiPick(in *bufio.Reader, out io.Writer, question string, options []multiOption) ([]bool, error) {
+	checked := make([]bool, len(options))
+	for i, o := range options {
+		checked[i] = o.checked
+	}
+	for {
+		fmt.Fprintf(out, "\n%s %s\n", ui.Accent("?"), question)
+		for i, o := range options {
+			box := ui.Dim("[ ]")
+			if checked[i] {
+				box = ui.Accent("[x]")
+			}
+			line := fmt.Sprintf("    %s %s %s", box, ui.Dim(fmt.Sprintf("%d.", i+1)), ui.Bold(o.label))
+			if o.desc != "" {
+				line += "  " + ui.Dim(o.desc)
+			}
+			fmt.Fprintln(out, line)
+		}
+		fmt.Fprintf(out, "  %s › ", ui.Dim(fmt.Sprintf("toggle 1-%d · all · none · Enter accepts", len(options))))
+
+		line, err := readAnswer(in)
+		if err != nil {
+			return nil, err
+		}
+		switch strings.ToLower(line) {
+		case "":
+			return checked, nil
+		case "all":
+			for i := range checked {
+				checked[i] = true
+			}
+			continue
+		case "none":
+			for i := range checked {
+				checked[i] = false
+			}
+			continue
+		}
+
+		var bad []string
+		for _, tok := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+			switch idx := matchOption(tok, options); idx {
+			case -1:
+				bad = append(bad, tok)
+			default:
+				checked[idx] = !checked[idx]
+			}
+		}
+		if len(bad) > 0 {
+			fmt.Fprintf(out, "  %s don't know %s — use numbers 1-%d, or a name\n",
+				ui.Err("✗"), strings.Join(bad, ", "), len(options))
+		}
+	}
+}
+
+// matchOption accepts a 1-based number or the option's own label, since
+// typing "orders" is more natural than counting rows.
+func matchOption(tok string, options []multiOption) int {
+	if n, err := strconv.Atoi(tok); err == nil {
+		if n >= 1 && n <= len(options) {
+			return n - 1
+		}
+		return -1
+	}
+	for i, o := range options {
+		if strings.EqualFold(o.label, tok) {
+			return i
+		}
+	}
+	return -1
 }
 
 // askText prompts for one line; Enter returns def. validate may be nil.

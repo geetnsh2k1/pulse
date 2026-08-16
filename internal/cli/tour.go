@@ -76,7 +76,7 @@ func runTour(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	t := &tour{self: self, dir: dir, port: port, in: bufio.NewReader(cmd.InOrStdin())}
+	t := &tour{self: self, dir: dir, port: port, in: promptIn(cmd)}
 	defer t.stopEngine()
 
 	wave := ui.Wave()

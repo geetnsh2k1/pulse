@@ -40,6 +40,12 @@ const echoHandler = `def handler(event, context):
     return event
 `
 
+// warmInvokeBar is deliberately far below the ~15ms that a sleep-based
+// synchronization would cost, and far above the ~0.4ms a healthy warm invoke
+// actually takes — tight enough to catch a real regression, loose enough for a
+// loaded CI runner.
+const warmInvokeBar = 10 * time.Millisecond
+
 func TestPerformanceBars(t *testing.T) {
 	if raceEnabled {
 		t.Skip("perf bars are measured without the race detector")
@@ -93,15 +99,19 @@ func TestPerformanceBars(t *testing.T) {
 	t.Logf("cold invoke %s (informational)", cold)
 
 	// Bar 2: warm invocation — median of 10.
+	//
+	// The bar used to be 50ms, which was loose enough to hide the fact that
+	// 15 of the measured 17ms were a `time.Sleep` in the log-collection path.
+	// A bar has to be tight enough to catch the regression it exists for.
 	durations := make([]time.Duration, 0, 10)
 	for i := 0; i < 10; i++ {
 		durations = append(durations, timeInvoke(t, eng))
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	median := durations[len(durations)/2]
-	t.Logf("warm invoke median %s, fastest %s, slowest %s (bar: <50ms)", median, durations[0], durations[len(durations)-1])
-	if median >= 50*time.Millisecond {
-		t.Errorf("warm invoke median %s, bar is <50ms", median)
+	t.Logf("warm invoke median %s, fastest %s, slowest %s (bar: <%s)", median, durations[0], durations[len(durations)-1], warmInvokeBar)
+	if median >= warmInvokeBar {
+		t.Errorf("warm invoke median %s, bar is <%s", median, warmInvokeBar)
 	}
 
 	// Bar 3: memory — this test process (engine runs in-process) plus its

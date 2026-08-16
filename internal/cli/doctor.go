@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/geetnsh2k1/pulse/internal/awscfg"
 	"github.com/geetnsh2k1/pulse/internal/config"
 	"github.com/geetnsh2k1/pulse/internal/engine"
 	"github.com/geetnsh2k1/pulse/internal/store"
@@ -55,6 +56,35 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		line: fmt.Sprintf("pulse.yaml valid — %d function(s), %d trigger(s), %d resource(s)",
 			len(cfg.Functions), len(cfg.Triggers), resources)})
 
+	// .env is optional, so report it either way — a missing file is fine,
+	// but "my variable isn't set" is much easier to diagnose when you know
+	// whether pulse saw the file at all. Never print the values.
+	if _, err := os.Stat(filepath.Join(cfg.Root, config.DotEnvFile)); err == nil {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("%s loaded — %d variable(s) shared by every function", config.DotEnvFile, len(cfg.DotEnv))})
+		// A freshly imported project starts with placeholders. Saying so here
+		// beats letting the first request fail on a table named CHANGE_ME.
+		if left := cfg.PlaceholderKeys(); len(left) > 0 {
+			checks = append(checks, check{ok: false, warn: true,
+				line: fmt.Sprintf("%d value(s) in %s still say %s: %s",
+					len(left), config.DotEnvFile, config.Placeholder, strings.Join(left, ", ")),
+				fix: "fill them in — functions that use them will fail until you do"})
+		}
+	} else {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("no %s (optional — put local secrets there, not in pulse.yaml)", config.DotEnvFile)})
+	}
+
+	// An imported project carries a list of what AWS has that pulse doesn't.
+	// Nothing mentions it again after the import, and the day it matters is
+	// weeks later when local behaviour differs from production.
+	if n, ok := importNotes(cfg.Root); ok {
+		checks = append(checks, check{ok: true,
+			line: fmt.Sprintf("IMPORT-NOTES.md present — %s from the import", countLabel(n, "caveat", "caveats")),
+			fix:  ""})
+	}
+
+	checks = append(checks, awsCheck())
 	checks = append(checks, runtimeChecks(cfg)...)
 	checks = append(checks, depChecks(cfg)...)
 
@@ -106,6 +136,56 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+// awsCheck reports what pulse can see of the local AWS setup. It never
+// fails: AWS credentials are only needed for `pulse import aws`, so a
+// machine without them is perfectly healthy — it just can't import yet.
+func awsCheck() check {
+	profiles, err := awscfg.Profiles()
+	switch {
+	case err != nil:
+		return check{ok: true, line: "aws config unreadable (only needed for `pulse import aws`)"}
+	case len(profiles) == 0:
+		return check{ok: true, line: "no aws profiles (only needed for `pulse import aws`)"}
+	default:
+		names := make([]string, 0, len(profiles))
+		for _, p := range profiles {
+			names = append(names, p.Name)
+		}
+		if len(names) > 4 {
+			names = append(names[:4], "…")
+		}
+		// Naming the command here is the point: this is the one machine state
+		// where `pulse import aws` is immediately usable.
+		return check{ok: true, line: fmt.Sprintf("aws profiles — %d found (%s) · `pulse import aws` can read them",
+			len(profiles), strings.Join(names, ", "))}
+	}
+}
+
+// importNotes counts the caveats an import recorded, so doctor can mention the
+// file without re-reading it aloud. Bullets are the "- **subject**: detail"
+// lines render.go writes.
+func importNotes(root string) (int, bool) {
+	body, err := os.ReadFile(filepath.Join(root, "IMPORT-NOTES.md"))
+	if err != nil {
+		return 0, false
+	}
+	n := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "- **") {
+			n++
+		}
+	}
+	return n, true
+}
+
+// countLabel is "1 caveat" / "3 caveats" — doctor lines read as sentences.
+func countLabel(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
 // runEnvDoctor answers "is this machine ready for pulse?" — everything that
 // can be known without a project. Used when there's no pulse.yaml in sight,
 // which is exactly where a freshly-installed user stands.
@@ -118,6 +198,7 @@ func runEnvDoctor() error {
 	checks = append(checks, node)
 	py, pyOK := runtimeCheck("python", "python3", "--version")
 	checks = append(checks, py)
+	checks = append(checks, awsCheck())
 
 	// The update check caches here; if it isn't writable, say so quietly.
 	if dir, err := os.UserConfigDir(); err != nil {
@@ -297,6 +378,12 @@ func depChecks(cfg *config.Config) []check {
 			out = append(out, check{ok: false, warn: true, line: "package.json without node_modules",
 				fix: "`npm install` (functions needing the AWS SDK will fail until then)"})
 		}
+	}
+	for _, m := range findMissingLayers(cfg) {
+		out = append(out, check{ok: false, warn: true,
+			line: fmt.Sprintf("%s declares %s with nothing unpacked (gitignored, so a clone never has them)",
+				m.Function, layerWord(len(m.ARNs))),
+			fix: "`pulse aws layers`"})
 	}
 	if _, err := os.Stat(filepath.Join(cfg.Root, "requirements.txt")); err == nil {
 		if _, err := os.Stat(filepath.Join(cfg.Root, ".venv", "bin", "python")); err == nil {

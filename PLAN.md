@@ -132,7 +132,7 @@ region: us-east-1
 
 functions:
   createOrder:
-    runtime: nodejs20.x        # nodejs18.x|20.x|22.x | python3.9–3.12
+    runtime: nodejs20.x        # nodejs18.x|20.x|22.x | python3.10–3.13
     handler: src/orders.create
     codeDir: services/orders
     timeout: 10                # enforced
@@ -930,3 +930,840 @@ version check.
    3× before failing (verified: passes while a full `go test -race` runs
    concurrently). Worth watching in CI — if it ever needs all 3 attempts
    regularly, that's a real cold-start bug to chase.
+
+---
+
+## 12. `pulse import aws` — run your real Lambda locally (planned 2026-08-09)
+
+The adoption unlock: today pulse only starts *new* projects, so the first
+reaction to a launch post is "cool, but my app already exists." This
+phase answers that by pulling a real, deployed Lambda — with its
+triggers, queues, tables and env — into a local pulse project.
+
+**Non-goals for v1:** mutating AWS in any way (import is strictly
+read-only), deploying, copying table/queue *data*, multi-region scans,
+runtimes other than Node/Python.
+
+### 12.1 The detection model (the core idea)
+
+Every item pulse writes carries a provenance, and the UI never blurs them:
+
+| Provenance | Meaning | Source |
+|---|---|---|
+| **confirmed** | AWS states it as fact | ListEventSourceMappings (sqs→fn), GetPolicy + API Gateway (http→fn), GetFunctionConfiguration, DescribeTable, GetQueueAttributes |
+| **guessed** | inferred, user must confirm | resources the code *uses*: execution-role IAM policy → env var names (`ORDERS_TABLE`) → code scan of the zip |
+| **unsupported** | found, cannot be represented | layers, VPC config, container images, provisioned concurrency, KMS-encrypted env, S3/SNS/EventBridge/Step Functions/Kinesis/DDB-Streams triggers, GSIs, non-Node/Python runtimes |
+
+Rationale: AWS records what *triggers* a function, but nothing records
+that a function calls DynamoDB at runtime — that lives in application
+code. So triggers are detected; used-resources are proposed with their
+evidence and confirmed by the user.
+
+### 12.2 Mapping (AWS → pulse.yaml)
+
+| pulse.yaml | AWS API | Notes |
+|---|---|---|
+| `functions.<n>.runtime` | GetFunctionConfiguration.Runtime | must be in config.SupportedRuntimes; else refuse |
+| `.handler` / `.timeout` / `.memory` | same call | direct |
+| `.codeDir` | GetFunction.Code.Location | presigned zip → unzip into `services/<n>/` |
+| `.env` (names) + `.env` file | Environment.Variables | values placeholdered unless `--with-values` |
+| `triggers[].http` | GetPolicy SourceArn, cross-checked with apigatewayv2 GetApis/GetRoutes/GetIntegrations | method + path |
+| `triggers[].sqs` | ListEventSourceMappings | queue ARN → name, BatchSize |
+| `resources.queues` | sqs GetQueueAttributes | VisibilityTimeout, RedrivePolicy → dlq + maxReceiveCount |
+| `resources.tables` | dynamodb DescribeTable | KeySchema HASH→pk, RANGE→sk; GSIs unsupported (flag) |
+
+### 12.3 Safety rules (non-negotiable)
+
+1. **Read-only.** No AWS API that mutates is ever called in v1.
+2. **Never destroys local work.** Default is a NEW project directory.
+   `--into .` merges additively into an existing project; collisions are
+   refused with a precise message (never overwritten). "Replace the whole
+   project" is deliberately NOT offered — a y/N prompt is thin protection
+   for deleting handler code someone wrote.
+3. **Atomic writes.** The project is built in a temp dir and moved into
+   place only after validation, so a failed import never leaves a
+   half-written project.
+4. **Secrets never land on disk by accident.** Every env value is
+   placeholdered by default; `--with-values` is explicit and warns.
+5. **Loud about gaps.** The unsupported list is printed in full and
+   written to `IMPORT-NOTES.md` in the project.
+
+### 12.4 Phases
+
+- **P0 — SDK spike** (½ day): add aws-sdk-go-v2 config/sts/lambda/
+  apigatewayv2/sqs/dynamodb/iam, measure the binary, update the "20 MB"
+  claim everywhere it appears (README, site hero/compare, both /vs pages).
+- **P1 — `.env` support in core** — ✅ DONE 2026-08-11. `internal/dotenv`
+  (strict parser: quotes, escapes, `export`, inline comments, BOM; errors
+  name the line — no expansion or multi-line, so a value never means
+  something other than it looks). `config.DotEnvFile`/`Config.DotEnv`
+  loaded beside pulse.yaml, `yaml:"-"` so secrets can never be written
+  back by `pulse add`/`remove`. All four templates ship `.env.tmpl`
+  (rendered to `.env`) + `.env.example`, with `.env` in the generated
+  `.gitignore`. Precedence (settled):
+  **.env → function `env:` → pulse's AWS_\* wiring**; the parent shell is
+  deliberately NOT inherited (AWS parity). `pulse doctor` reports whether
+  .env was seen and how many vars (never values). GUIDE §3.11 + README.
+  **Bug found and fixed along the way:** a project's `env:` could
+  previously override `AWS_ENDPOINT_URL`/`AWS_REGION`, silently pointing
+  the SDK away from the local façade. AWS rejects those keys in function
+  config; pulse now does too (`config.ReservedEnvKeys`, refused in both
+  pulse.yaml and .env, with the merge guarded defensively).
+  **Second bug:** a template file literally named `.env` was swallowed by
+  the template's own `.gitignore` — it existed on the author's machine and
+  would be missing from every clone. Hence `.env.tmpl`, which the existing
+  render pipeline already strips to `.env`.
+- **P2 — profile foundation** — DONE 2026-08-11. `internal/awscfg`:
+  forgiving INI reader over `~/.aws/config` + `credentials` (honors
+  AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE; skips `[sso-session]`,
+  `[services]`; flags SSO and assume-role profiles; collects names and
+  regions only — never a key or token), `Load`/`Whoami` with a 10s cap,
+  and `Explain()` — the error taxonomy: profile-not-found (lists the real
+  ones), SSO expired, no credentials, expired/invalid token, access
+  denied, throttled, DNS, timeout, unknown. Every branch carries a fix and
+  keeps the original error wrapped. New commands `pulse aws profiles` and
+  `pulse aws whoami` (identity preflight), `--profile` Tab-completes from
+  the caller's own profiles, and `pulse doctor` gained a never-failing AWS
+  line (credentials are only needed for import). **Bare commands ask, they
+  don't fail** (aws_wizard.go): with no `--profile`/`--region`, `whoami`
+  picks the single profile silently, takes `default` when present, and
+  otherwise shows a picker; region falls back to the profile's own, then a
+  shortlist with free-text "other…". Non-TTY callers skip every prompt and
+  get the classified error, so CI never hangs. A prompted region prints
+  `aws configure set region …` rather than pulse editing ~/.aws itself.
+  **The whole credential chain is honored, not just profiles** (his catch —
+  "what if none is configured?"): environment variables, ECS/EKS task
+  roles and IRSA all work with no `~/.aws` at all, `AWS_REGION` is used
+  instead of asking, and messages name the real source ("AWS rejected the
+  credentials for environment variables (AWS_ACCESS_KEY_ID)" — never a
+  profile that isn't involved). The true empty state — no profiles, no env
+  credentials, no role — says exactly that, adapts its advice to whether
+  the aws CLI is even installed, and reassures that pulse needs read-only
+  access. Tests: INI fixtures + every taxonomy branch via stubbed smithy
+  errors + 9 scripted wizard paths (profiles, single profile, default,
+  env credentials, AWS_REGION, non-TTY, flags-win, empty state) — all
+  offline, pointed at temp config files. Shipped
+  binary with SDK linked: **17.4 MB** stripped (still under the 20 MB
+  claim; P0 predicted 18.6 MB for all seven clients — only config+sts are
+  linked so far).
+- **P3 (mapper half) — DONE 2026-08-11.** `internal/importer` is SDK-free
+  and does no I/O, so the risky decisions are testable without credentials:
+  `types.go` (neutral discovered shapes + Plan/Guess/Note/Refusal),
+  `plan.go` (`BuildPlan` + `InferResources`), `render.go` (`ToConfig`,
+  `.env`/`.env.example`, `IMPORT-NOTES.md`, `Summary`). 31 test cases.
+  Highlights:
+  - **Refusals** name the function and the fix: container images,
+    non-Node/Python runtimes, >250 MB bundles, missing handler.
+  - **Facts vs guesses**: routes and event-source mappings are Confirmed;
+    resources are inferred from env values that match a real resource
+    name, IAM grants naming a specific ARN (wildcards and Denies ignored),
+    and finally a word-boundary code scan. Two signals — or one deliberate
+    one (env/IAM) — make a guess *strong* (pre-checked); a code-only
+    mention stays weak. Names that don't exist in the account are never
+    proposed, so a plan can't reference something undescribable.
+  - **Nothing silent**: ANY routes expand to five methods *with a note*,
+    disabled mappings, filter criteria, FIFO, layers, VPC, reserved
+    concurrency, secondary indexes and streams all produce Warnings or
+    Unsupported notes that land in IMPORT-NOTES.md beside the project.
+  - **Correct by construction**: `ToConfig()` builds the same struct
+    pulse.yaml parses into and is run through `config.Validate()` before
+    anything is written; out-of-range timeouts/memory are clamped; a
+    referenced DLQ is always created locally so retries have somewhere to
+    land; secrets never enter pulse.yaml (values go to `.env`,
+    placeholdered unless `--with-values`, and the generated file is
+    round-trip parsed by `internal/dotenv` in tests).
+- **P3 (discovery half) — DONE 2026-08-11.** `discover.go`: five narrow
+  read-only interfaces (Lambda/SQS/Dynamo/APIGateway/IAM) so every test
+  runs on fakes — nothing in the package can reach the network. 43 cases
+  total. Decisions worth keeping:
+  - **Only the function is mandatory.** Event-source mappings, routes,
+    queue/table lists and the IAM role are read concurrently and each
+    *degrades* on AccessDenied into a `Degraded` note rather than failing
+    the import. A locked-down account still gets a usable project, and is
+    told exactly what was lost.
+  - **Speed**: the four independent reads run in parallel — six serial AWS
+    round trips is a visible wait.
+  - **No N+1**: `ListTables`/`ListQueues` give names for the picker;
+    `DescribeTable`/`DescribeQueue` run only for what is confirmed or
+    selected, so an account with 200 tables costs two calls, not 200.
+  - **Routes**: the Lambda resource policy is the cheap precise source
+    (apiId/stage/METHOD/path straight out of `AWS:SourceArn`); wildcarded
+    methods/paths are rejected rather than guessed, and an API Gateway walk
+    (matching integration URIs on a word boundary) is the fallback.
+  - `ListFunctions` marks each function importable or not **with the
+    reason**, so the picker leads with what pulse can actually run.
+  - KMS-encrypted environments are flagged: the values readable there are
+    ciphertext, not what the function sees.
+  Note: the binary was still 17.4 MB at this point because nothing in
+  `cmd/pulse` referenced the importer — the linker drops the service clients
+  until P4 wires the command. (It then cost far more than P0 predicted; see
+  the correction in §12.7.)
+- **P4 (writer + CLI) — DONE 2026-08-11.** `pulse import aws [function]`
+  with `--profile/--region/--function/--name/--dry-run/--yes/--with-values`.
+  The flow: identity preflight (account on screen before anything is read)
+  → function picker → concurrent discovery → code download → guess
+  confirmation → exact description of what was confirmed → full preview →
+  atomic write. 76 new test cases, none of which can reach AWS.
+  - **`internal/importer/write.go`** — the project is assembled in a
+    `.pulse-import-*` staging directory *beside* the destination (same
+    filesystem, so the final move is an atomic rename), and only after the
+    written `pulse.yaml` has been re-loaded through `config.Load`. A failed
+    or refused import leaves nothing behind, not even the staging dir.
+    `pulse.yaml` is hand-rendered in the same shape `pulse init` scaffolds
+    (yaml.Marshal would emit `env: {}`, `buckets: []`, `api: {port: 0}`),
+    with route paths quoted so `{id}` survives, and non-string key types
+    written explicitly. `.env` is written 0600; `.env.example`,
+    `.gitignore` (with `.env` in it) and `IMPORT-NOTES.md` alongside.
+  - **`CodePackage`** — the deployment package is fetched *once*, before any
+    question is asked. Two reasons: a presigned URL can't expire while the
+    user thinks, and the same bytes feed the code scan (vendored
+    `node_modules`/`site-packages` skipped — a resource name found in a
+    dependency is noise, not evidence). Extraction has a zip-slip guard and
+    an expanded-size cap, both tested with hostile archives.
+  - **Interactive parts** (`import_wizard.go`) are pure functions over an
+    injected reader/writer: the function picker lists what can't run *with
+    the reason* (a refusal after choosing wastes the user's time), and the
+    guess checklist pre-checks strong evidence so Enter is the common
+    answer. `--yes` and non-TTY take exactly the pre-checked defaults and
+    never prompt — proven by a test that asserts no prompt string reaches
+    the screen.
+  - **Offline end-to-end test** (`import_e2e_test.go`): a local server
+    speaks enough STS/Lambda/SQS/DynamoDB/IAM (via `AWS_ENDPOINT_URL`) for
+    the *real* SDK clients to run the whole command. It asserts the exact
+    call list — and fails the test if pulse ever sends a PUT/POST-to-mutate
+    /DELETE, so "read-only" is enforced by machine, not by intention.
+    Covers the golden path, `--dry-run`, `--with-values`, an IAM denial,
+    declining at the confirmation, `--name`, and the non-interactive path.
+  - **Three real bugs found by building it:**
+    1. `sanitizeProject` produced invalid project names — a Lambda called
+       `createOrder` yielded project `createOrder`, which `config.Validate`
+       rejects (lowercase/digits/hyphens only). The import would have
+       failed at its very last step. Now normalized, with a table test.
+    2. `os.Rename` onto an existing *empty* directory succeeds on Linux and
+       fails on macOS. The empty dir is now removed first with `os.Remove`,
+       which refuses a non-empty directory — so if a file appeared during
+       the download, the import stops instead of eating it.
+    3. `Identity.Profile` said `default` even when credentials came from
+       environment variables — the exact mislabeling fixed for error
+       messages in P2, still present in the identity display (and it would
+       have been written into IMPORT-NOTES.md). Now `Profile` is empty
+       unless a profile is really in play, with `Source` carrying the truth.
+  - **Deferred as decided:** `--into .` additive merge is NOT built (§12.9
+    settled on new-project-only for v1).
+  - **Binary: 30.6 MB stripped, 9.4 MB gzipped** — see the correction in
+    §12.7. Within the "~30 MB is acceptable" decision from §12.6.
+- **P5 (errors + docs) — DONE 2026-08-12.** The §12.5 table is now closed,
+  and the docs describe a feature that exists.
+  - **`pulse import aws --policy`** — P4 shipped an AccessDenied message that
+    pointed at this flag before it existed, which is the kind of dangling
+    promise that makes a tool feel unfinished. It now prints every action
+    with the reason pulse needs it, then a pasteable IAM document. It runs
+    *before* credentials are touched, because the moment you need it is the
+    moment you don't have access; and redirected to a file it prints the JSON
+    alone, so `pulse import aws --policy > p.json` is usable input for
+    `aws iam create-policy`.
+  - **The policy can't drift from the code.** `policy_test.go` reflects over
+    the five API interfaces in discover.go and fails both ways: an API that
+    is callable but ungranted, and an action granted but never called. A
+    third test parses the document and rejects any wildcard or any verb that
+    could mutate — the read-only promise enforced on the artifact, not just
+    in prose.
+  - **AccessDenied names the exact action.** `smithy.OperationError` carries
+    the service and operation, so the message is now "not allowed to call
+    `lambda:GetFunction`" — a request you can paste. `awscfg.IAMAction`
+    special-cases API Gateway v2, which authorizes by HTTP verb
+    (`apigateway:GET`), so nobody goes hunting for `apigateway:GetApis` in
+    the IAM reference.
+  - **Two new network causes**: an unreachable proxy (names the actual
+    `HTTPS_PROXY` value that's set) and TLS interception (`x509` errors →
+    AWS_CA_BUNDLE), which previously both landed in "unknown" or "timeout"
+    with useless advice.
+  - **Throttling tells the truth**: retries raised to 5 attempts
+    (`awscfg.maxAttempts`, safe because every call is a read) and the message
+    quotes that number — with a test asserting the message matches the
+    constant, so the claim can't rot.
+  - **Docs**: GUIDE §3.13 "Already deployed? — `pulse import aws`" (placed
+    after `.env` and add/remove so nothing it mentions is untaught, per the
+    no-forward-references rule), a signpost in §1, cheat-sheet rows,
+    §9 corrected (import exists, export doesn't). README gained an "Already
+    deployed? Import it" section after the quickstart. `pulse doctor` now
+    names the command on the line where it's actually usable.
+  - Also fixed: the e2e test hand-registered flags and had already drifted
+    (missing `--policy`); `addImportFlags` is now shared by the command and
+    the test, the same pattern `addAWSFlags` uses.
+  - **Gap found while auditing P5 against itself, then closed**: the taxonomy
+    only covered failures that *stop* the import. The `degrade()` path — the
+    place a locked-down account most often meets AccessDenied — still relayed
+    raw SDK prose, truncated mid-token: *"not readable (ListRolePolicies,
+    https response error StatusCode: 403, RequestID: , api error A…)"*. All
+    six degrade sites now go through `whyUnreadable()`, which names the
+    permission and points at `--policy`, and `shortErr` prefers the API error
+    code and clips at a word boundary. These notes are copied into
+    IMPORT-NOTES.md, so the old text was useless twice over. Reads:
+    *"execution role policy — no permission for iam:ListRolePolicies (see
+    `pulse import aws --policy`) · resource guesses rely on env vars alone"*.
+- **P5.5 — REAL-TERMINAL ACCEPTANCE RUN, DONE 2026-08-12** (his ask: "make
+  sure till P5 everything is done right, with testing from real terminal").
+  A standalone stdlib-only fake AWS (`scratchpad/fakeaws`, speaks STS/Lambda/
+  SQS/DynamoDB/IAM over AWS_ENDPOINT_URL) let the *shipped binary* run the
+  whole journey with no account touched — the credentials boundary stays
+  undecided. Journey covered: no-credentials empty state → `pulse aws
+  profiles`/`whoami` → interactive profile+function picker → guess checklist →
+  preview → write → `pulse validate`/`list` → venv install → `pulse start` →
+  live HTTP request → **item actually persisted in the local table** →
+  `pulse send` through the imported queue trigger → `pulse events` + replay →
+  `pulse doctor` → every error path. **Six real bugs found, all fixed, all
+  with regression tests:**
+  1. **Two `bufio.Reader`s over one stdin** (the worst): the profile picker's
+     4 KB buffer swallowed the answers meant for the function picker, so
+     `printf '1\n1\n' | pulse import aws` died with "cancelled" — and pasting
+     several answers at a terminal would do the same. Ten sites created their
+     own reader; all now share `promptIn(cmd)`. Chains that collided:
+     import→resolveAWSTarget and bare `pulse`→initWizard.
+  2. **`.env` edits did nothing.** `ignoredPath` drops every dotfile, so the
+     watcher never saw `.env`. An imported project's own error says "fill in
+     .env, then try again" — which was a lie; the function kept its boot-time
+     values. `.env` is now checked before ignoredPath and reloads the config
+     like pulse.yaml (the engine's reload already re-reads it), and the console
+     names the file that changed instead of always saying pulse.yaml.
+  3. **`pulse start --port N` lost the port on any hot-apply** (pre-existing,
+     unrelated to import): applyConfig re-reads pulse.yaml, which knows
+     nothing about the flag, so the API silently moved to 3000 mid-session and
+     every open client broke. `Engine.PortOverride` now survives reloads. The
+     regression test was checked by disabling the fix and watching it fail.
+  4. **The first request after an import gave actively wrong advice**: the
+     table name is `CHANGE_ME`, and pulse said "add a table named CHANGE_ME
+     to pulse.yaml". Now: "an environment variable in .env hasn't been filled
+     in yet". `config.Placeholder` is the one shared constant, plus a
+     `pulse start` warning line and a `pulse doctor` check so it's caught
+     before the failure.
+  5. **A typo'd function name** produced raw SDK prose ("https response error
+     StatusCode: 404") and advised checking connectivity, which was fine.
+     Now: `no Lambda function named "createOrderr" in eu-west-1 · did you mean
+     "createOrder"?` (`config.DidYouMean` exported, `awscfg.IsNotFound`).
+  6. **`--profile` with a name that doesn't exist** prompted for a *region*
+     before failing. Validated up front against the discovered profiles, with
+     a suggestion.
+  Cosmetic: a small bundle showed "0 KB" (now "865 bytes").
+  **Not our bug, but expect red CI:** the node e2e currently fails because the
+  newest `@aws-sdk/client-dynamodb` publish requires `@aws-sdk/types@^3.974.3`
+  while the registry only has `3.974.2` — a partially-propagated AWS release.
+  Verified by pinning 3.970.0, where the golden path passes end to end
+  (request → queue → worker → 🎉). It will clear itself upstream.
+- **P5.6 — UX polish from the acceptance run — DONE 2026-08-12** (all four,
+  his call: "start with 1,2,3,4 in this cut"). Each verified in a real
+  terminal against the standalone fake, not just in tests.
+  Four things the real-terminal run made obvious, ranked by how often a user
+  would meet them. What shipped, and what changed while building it:
+  1. **`--dry-run` shouldn't ask anything.** It currently runs the guess
+     checklist, so "just show me the plan" turns into a conversation. Make
+     `--dry-run` imply the pre-checked defaults (same as `--yes`), and say so
+     in the flag help. Smallest change, removes a papercut on the flag people
+     reach for first.
+  2. **Finish the job: install dependencies after a successful import.**
+     `pulse init` already does this (`installDeps`, `--no-install` to skip);
+     import only *prints* the command. The wrinkle import adds: the code lives
+     in `functions/<name>/`, while the python runner wants `.venv` at the
+     project ROOT — so this is not a straight reuse of `installDeps`, it needs
+     a root venv installing from the function's requirements.txt. Skip
+     entirely when the bundle already vendors its dependencies (the common
+     case for a real Lambda zip). Add `--no-install` for parity. Turns four
+     printed steps into one command to a running app.
+  3. **Region miss should help, not stop.** The region comes only from the
+     profile (or `--region`/`AWS_REGION`), so a function in another region
+     reads as "no Lambda function named X" — technically true, unhelpful. On a
+     not-found, offer to look in a couple of likely regions (the profile's
+     neighbours + the account's most-used), or at minimum print
+     `try --region <other>` with real candidates rather than a generic hint.
+     Costs one ListFunctions per region probed, on the error path only.
+  4. **Keep IMPORT-NOTES.md alive past day one.** It records what AWS has that
+     pulse doesn't, and nothing mentions it again after the import. `pulse
+     doctor` should note that the file exists while it's still in the project
+     ("IMPORT-NOTES.md present — N caveats from the import"), so the gap stays
+     visible when a mismatch actually confuses someone weeks later.
+
+  **Notes from doing it:**
+  - #2 landed as `installImportedDeps`, deliberately NOT a reuse of init's
+     `installDeps`: the venv belongs at the project ROOT (where the worker
+     resolves it) while `requirements.txt` sits in `functions/<name>/`. Tests
+     assert both — that `.venv` exists at the root and that it was NOT created
+     beside the code, which is the mistake a naive reuse would make.
+  - #3 probes with **GetFunction, not ListFunctions**: one exact lookup per
+     region instead of paging every function, needing no extra permission.
+     Concurrent, 6s cap, shortlist only, error path only, and it returns
+     candidate order so the answer is deterministic. `importer.FindRegion`.
+  - Both fakes (the Go test one and `scratchpad/fakeaws`) are now
+     **region-aware**, reading the region out of the SigV4 credential scope in
+     the Authorization header. Without that, "it's in another region" could not
+     be tested at all — the fakes answered for every region.
+  - `scripts/e2e.sh` gained 3 assertions (20 total): `import aws --policy`
+     prints the policy, names a read action, and contains no mutating verb.
+     It needs no credentials, so this is real-binary coverage on every OS in
+     the CI matrix.
+- **P6 — live verification** (1–2 days, NEXT, blocked on him):
+  - He supplies a real Lambda — ideally with an SQS trigger and a DynamoDB
+    table, so the live run covers the same ground the fake did (§12.8).
+  - **Credentials: DECIDED 2026-08-12** — he provides credentials and I may
+    run the read-only calls myself, with a standing rule: **confirm before
+    anything that adds, removes or modifies** (in AWS or in his repo). Import
+    is read-only by construction, so the live run itself needs no such
+    confirmation; the rule governs everything around it.
+  - What the live run must prove beyond the fake: real AWS pagination
+    (accounts with >50 functions), real presigned S3 download, real
+    API Gateway shapes (REST v1 *and* HTTP v2), a real KMS-encrypted
+    environment, real throttling behaviour, and an SSO profile end to end.
+  - Then: recorded fixtures from that run, so the paths stay tested offline
+    forever without needing the account again.
+- **P7 — website coupling** (~half a day, after P6 proves it works):
+  - Quickstart splits "new project | already deployed in AWS".
+  - New FAQ entry: "Can I run my existing Lambda locally?"
+  - Both `/vs` pages gain the import row — neither competitor imports live
+    functions, so it's a genuine differentiator, stated once and honestly.
+  - **The size claim must change in the same pass**: `app/page.tsx` compare
+    table + the Docker FAQ answer, `/vs/localstack` (×2), `/vs/sam-local`.
+    "One 20 MB binary" is false at 30.6 MB (§12.7). README already reworded.
+  - `public/version.json` bump belongs to the release, not this phase.
+- **P8 — export (the other direction)** — DEFERRED, not scoped. His original
+  framing was "import first, then export". Nothing here is designed yet;
+  when it comes up, the honest scope question is whether pulse emits SAM/CDK
+  artifacts or stops at "your code is already vanilla SDK, deploy it with
+  whatever you use". Deliberately left open.
+
+### 12.11 P6 test ladder — one thing at a time (his design, 2026-08-12)
+
+His call, and the right one: start with a bare Lambda and add one capability
+per rung. Two reasons beyond safety — a failure at rung N is unambiguous
+(only one thing changed), and **each rung yields a clean fixture set** we can
+record and keep testing offline forever. One big function would give one
+tangled blob.
+
+**How each rung runs** (same every time, so results are comparable):
+1. He creates/points at the function and tells me its name + region + profile.
+2. `pulse aws whoami` — prove the credential path before anything else.
+3. `pulse import aws <fn> --dry-run` — read-only, writes nothing, shows the plan.
+4. `pulse import aws <fn>` — the real thing.
+5. Read the four written files aloud; diff against what AWS actually has.
+6. `pulse start` → exercise it the way the rung allows (invoke / curl / send).
+7. Record fixtures + write findings into this section.
+8. Only then move up a rung.
+
+| Rung | What he provides | What it proves FOR THE FIRST TIME (the fake could not) |
+|---|---|---|
+| **R0** | one zip Lambda, **no** trigger/env/resources, Python or Node | the real credential chain · real STS · real `ListFunctions` shape and pagination · **the real presigned S3 download** (HTTPS + query auth + possible redirect, vs my localhost plain-HTTP zip) · a real AWS-produced zip's layout and file modes · `GetPolicy` returning the real not-found code when there are no triggers · empty `ListEventSourceMappings` · **and then: does `pulse start` + `pulse invoke` actually run it** |
+| **R1** | + env variables (still no resources) | real variable names/values · the `CHANGE_ME` path and the new `pulse start` warning · `--with-values` on real values, including the round-trip through pulse's own .env parser (quoting, `#`, JSON, PEM newlines — covered by a test now, but real data is the judge) · reserved `AWS_*` keys if any · KMS-encrypted env if he has one |
+| **R2** | + an HTTP trigger | the **resource-policy parse against a real policy** (real ones carry Sids, SourceAccount, sometimes wildcards) · real `execute-api` ARN + stage shape · the apigatewayv2 fallback walk · **v1 REST and v2 HTTP are different shapes — both worth a pass** · then `curl` the imported route locally |
+| **R3** | + an SQS trigger (ideally with a DLQ) | real `ListEventSourceMappings` (batch size, window, FIFO flag, disabled state) · real `GetQueueAttributes` + the RedrivePolicy JSON-in-a-string · the DLQ auto-create · then `pulse send` locally and watch the worker fire |
+| **R4** | + a DynamoDB table the code uses | real `DescribeTable` key schema and types · **GSIs, which real tables almost always have** → the unsupported note · streams · the guess machinery against a real execution role (see the prediction below) · then a real read/write through the local table |
+| **R5** | any messy real function, nothing built for us | layers · VPC config · provisioned concurrency · >50 functions in the account (pagination) · an SSO profile · whatever else reality has. Success here is measured in *honest notes*, not a clean import |
+
+**Predictions worth writing down before we start** — where I expect reality to
+disagree with a decision made against fakes:
+
+1. **The IAM signal will probably be missing on real functions.** P3 reads only
+   *inline* role policies, with the rationale that managed policies are broad
+   and noisy. That's true of AWS-managed ones — but real teams put table and
+   queue grants in **customer-managed** policies, which are attached, not
+   inline. So on a real Lambda the strongest guess signal may simply be absent,
+   and guesses will fall back to env vars + code scan. If R4 shows this, the
+   fix is to also read attached *customer-managed* policies (skipping
+   `arn:aws:iam::aws:policy/*`), which is one more API and one more permission.
+   Watch for it; don't pre-build it.
+2. **Real runtimes may be refused.** Accounts still run `python3.9`,
+   `nodejs16.x`, `provided.al2`, `dotnet8`. R0 might refuse his first function,
+   which is a correct result, not a bug — but worth knowing before he creates
+   something with an old default.
+3. **A REST (v1) API's payload format matters.** pulse records
+   `payloadFormat: "1.0"` only when it detects a REST API; if that detection
+   is wrong the handler sees the wrong event shape and misbehaves in a way that
+   looks like pulse working "almost". R2 is where that gets proven.
+
+**Pre-P6 hardening done while planning this (2026-08-12):**
+- **Presigned URLs are redacted from errors.** A signed S3 link carries
+  `X-Amz-Credential` and `X-Amz-Signature` in its query, and Go's `*url.Error`
+  embeds the whole URL — so a network hiccup mid-download would have printed a
+  live signed credential to the terminal, and from there into any pasted bug
+  report. `redactURL` strips the query and keeps the host, with a test that
+  asserts the signature never appears and that the message is still
+  diagnosable. This only became reachable at P6, which is why it was worth
+  fixing first.
+- **The generated `.env` is proven against real-world values**: PEM keys with
+  newlines, JSON blobs, `#`, quotes, `a=b=c`, trailing spaces — round-tripped
+  through pulse's own parser, since `--with-values` silently corrupting a value
+  would be the worst kind of bug.
+
+**Cleanup discipline**: everything he creates for a rung is his to delete, and
+I will confirm before touching anything that adds, removes or modifies (§12.8).
+
+### 12.13 R0 RESULTS — first live run, and the bug it found (2026-08-13)
+
+Account 419837309667 (Tartan work account, his call), ap-south-1, profile
+`tartan` = `user/akash`. R4/R5 deferred at his request. Full transcripts live
+outside the repo in `~/Desktop/pulse-testing/` — deliberately not committed,
+since this repo is public.
+
+**Two functions**: `start-specific-application` (in real use — read-only
+dry-run only, then left alone) and `send-bulk-templated-email` (a sample, safe
+to play with) which became the R0 subject.
+
+**R0 is green, end to end.** whoami → dry-run (0 files written, verified) →
+real import → `pulse start` → `pulse invoke` returned *exactly* what the
+function returns in AWS:
+
+    ✓ send-bulk-templated-email · success · 0ms
+    {"statusCode": 200, "body": "{\"message\": \"Hello, World!\"}"}
+
+Everything the fake could only simulate now holds against real AWS: the
+credential chain, real STS, the real presigned S3 download (295 bytes, HTTPS +
+query auth), real `GetFunction` shape, `GetPolicy` correctly reporting no
+routes, empty event-source mappings, and a pulse.yaml matching AWS field for
+field (python3.14, `lambda_function.lambda_handler`, 3s, 128 MB).
+
+**The bug: `SupportedRuntimes` was stale by design.** The function runs
+**python3.14** and pulse refused it. The README has promised "Python 3.10+ and
+Node 18+" since launch while the code enforced an exact enumeration — so every
+AWS runtime release made pulse wrong until someone edited a slice and shipped.
+AWS ships python3.14 *today*, so the import feature was stale before it
+launched.
+
+This is the **same bug already fixed once** in `pulse doctor`, which used to
+flag Python 3.13 as uncertified while CI tested it (§11 L1 findings, item 2).
+The list survived in the place that gates what pulse.yaml may declare and what
+import will accept. Now `config.SupportsRuntime` is a floor:
+`internal/config/runtimes.go`, family + `MinNodeMajor`/`MinPythonMajor.Minor`,
+anything at or above it accepted including versions this build never heard of.
+`SupportedRuntimes` survives as *what CI exercises* — used for typo
+suggestions and error examples, never as the gate.
+
+Accepted-but-untested became its own category rather than a silent assumption:
+`config.RuntimeNewerThanTested` puts a caveat in the plan and in
+IMPORT-NOTES.md, and `pulse start` already said the honest thing at run time
+("using python 3.13.2 for python3.14 functions … behavior may differ").
+Tests cover python3.14/3.20/4.0 and nodejs24/99 accepted, python3.9 and
+nodejs16 refused, java/dotnet/ruby/go/provided refused, malformed refused, and
+every CI-matrix runtime passing its own gate.
+
+**Lesson worth generalizing**: pulse has now shipped this identical bug twice
+in two places. Any hardcoded list of *versions* is a bug with a delay on it —
+if a third one appears (runtime families in workers, say), make it a floor
+before it bites.
+
+**Permissions**: `dynamodb:ListTables` and `iam:ListRolePolicies` are denied
+for this credential; both degraded with the missing permission named, and
+neither failed the import. R0–R3 are unaffected. R4 needs those DynamoDB reads
+granted — one reason it's deferred.
+
+### 12.14 R1 RESULTS — environment variables, live (2026-08-13)
+
+Same function as R0 with `API_KEY` and `BASE_URL` added in the console.
+**Green.** The secrets promise held against real AWS: both names discovered,
+both values written as `CHANGE_ME`, and neither name nor value anywhere in
+pulse.yaml (grep = 0). `.env.example` carried names only. `pulse start` warned
+naming the unfilled variables, `pulse doctor` reported it as a warning rather
+than a failure and surfaced IMPORT-NOTES.md — the P5.5 #4 and P5.6 #4 fixes
+both earning their place on live data.
+
+**The proof R1 could add that R0 could not**: a temporary
+`print(os.environ.get(...))` in the handler showed pulse's written values
+arriving *inside the running function* (`CHANGE_ME | CHANGE_ME`), so the whole
+chain — AWS → .env → worker environment — is verified end to end, not inferred.
+Hot reload carried the edit (`workers retired, next invoke runs fresh code`)
+and the handler was restored immediately.
+
+**Improvement made during the rung**: the dry run said "2 environment
+variable(s) → .env" without saying which. A preview exists so nothing is a
+surprise, and the count hid the part worth seeing — particularly for deciding
+whether `--with-values` is wanted at all. Names are safe to print (pulse
+already commits them to `.env.example`); values never are. Now
+`env → .env  API_KEY · BASE_URL`, capped at 8 + "and N more".
+
+**`--with-values` re-test, same day, after he confirmed the values are
+throwaway and updated the handler to consume them — also green.** The real
+value reached the running function:
+
+    {"message": "Hello, World!", "app_name": null, "environment": "www.google.com"}
+
+`www.google.com` is what is set in AWS, so the whole chain (AWS env var → .env
+→ worker environment → handler → response) is proven with real data in *both*
+modes. `.env` came out 0600 and gitignored, `.env.example` stayed names-only
+even with `--with-values`, pulse.yaml leaked nothing, and `diff -rq` against a
+placeholder import of the same function showed **exactly one differing file**
+(`.env`) — so the flag's blast radius is provably one file.
+
+Nice accident worth keeping: his handler reads `APP_KEY` while AWS has
+`API_KEY`, so `app_name` came back `null` — which is exactly what AWS returns.
+Faithful parity on a *missing* variable, not just a present one.
+
+### 12.15 R2 pre-flight — the payload-format bug, found before importing (2026-08-13)
+
+He offered `slack-bot-event-handler` (behind API Gateway) for R2. A read-only
+dry run against it answered "will this work?" — yes, and richly: a real route
+`POST /slack/events`, three env vars (`DOC_DB_URI`, `SLACK_EVENT_QUEUE_URL`,
+`SLACK_SIGNING_SECRET` — so **no `--with-values` on this one, ever**), a layer,
+**VPC configuration**, and a FIFO queue *inferred from an env var and then
+described* — the guess machinery working on real production data, flagged
+correctly as FIFO-not-fully-emulated.
+
+**The bug it exposed (§12.11 prediction #3, confirmed).**
+`routeFromExecuteARN` hardcoded `PayloadFormat: "2.0"`, and `routes()` returned
+early whenever the resource policy yielded routes — never asking which *kind*
+of API it was. A Lambda resource policy produces an identical `execute-api`
+ARN for a REST API (v1, always payload 1.0) and an HTTP API (v2, normally
+2.0). The two formats put the method and path in different places, so assuming
+2.0 for a REST-API function hands a working handler an event it doesn't
+recognize: **fails locally, fine in production** — the exact "looks like pulse
+almost works" failure the whole project exists to prevent.
+
+His account is the ideal place to have caught it: it runs **both** — 11+ v1
+REST APIs and 6 v2 HTTP APIs.
+
+Fixed in `resolvePayloadFormats`: the API ID from the policy is checked against
+the account's HTTP APIs (paginated — a half-read list would mislabel real APIs
+as REST). Found → use that API's declared format. Not found → REST v1 → 1.0 by
+elimination. **Unreadable → assume nothing**: keep the default and report
+`api payload format … assuming 2.0 — if this is a REST API, set
+payloadFormat: "1.0"`. Three tests cover those branches.
+
+Luck worth recording: the Slack function itself was never mis-imported,
+because its policy has a wildcard method (`wqjccz47fi/*/*/slack/events`) which
+pulse correctly refuses to guess from — so it already fell through to the API
+Gateway walk, which derives the format properly. The bug only bites when the
+policy names a concrete method, which is exactly what v1 REST APIs generate.
+
+**Still needed to finish R2**: a function behind one of the account's v1 REST
+APIs, to prove the 1.0 path end to end on real data rather than on fakes.
+
+### 12.12 "It cannot alter anything" — how that is actually enforced (2026-08-13)
+
+He decided to import from the Tartan work account (he has access; a new test
+account was costing him money). Reaffirmed after the risks were laid out, so
+it proceeds — and the honest response to "make sure we won't alter anything"
+is enforcement, not assurance. Five layers, weakest to strongest:
+
+1. **No call site exists.** Grepped: the only concrete SDK clients in the whole
+   codebase are five in `NewDiscoverer`, one `lambda.Client` in `FindRegion`
+   (GetFunction only), and one `sts.Client` in `Whoami` (GetCallerIdentity
+   only).
+2. **The type system narrows them immediately.** `Discoverer` holds its clients
+   as `LambdaAPI`/`SQSAPI`/`DynamoAPI`/`APIGatewayAPI`/`IAMAPI` — 14 read
+   methods total. After construction the code *cannot name* a mutating method:
+   it isn't in the variable's type.
+3. **A runtime guard on the single door** (`awscfg/readonly.go`, added today).
+   Every client built through `awscfg.Load` carries a smithy middleware that
+   refuses any operation outside a 15-name allowlist, at the Initialize step —
+   so a blocked call is never signed, never sent, and never reaches CloudTrail.
+   A future write feature has to add itself deliberately; it cannot arrive by
+   refactor or by a dependency calling something on our behalf. Ten genuinely
+   destructive calls (DeleteFunction, UpdateFunctionCode, PutItem, DeleteTable,
+   SendMessage, PurgeQueue, Invoke, AddPermission, Scan, ReceiveMessage) are
+   asserted blocked, with a test server that fails the test if anything
+   reaches the wire. `dynamodb:Scan` and `sqs:ReceiveMessage` are refused too:
+   they only read, but reading production *data* isn't import's business and
+   consuming a queue is destructive.
+4. **The offline e2e fake** fails the build if any mutating HTTP verb appears.
+5. **IAM, which doesn't require trusting pulse at all.** `pulse import aws
+   --policy` produces a credential that *cannot* mutate even if every layer
+   above were wrong. For the Tartan account this is the layer that matters:
+   use a read-only identity and the question stops depending on my code.
+
+**A claim I tried to make and could not.** I checked whether the mutating
+operations are even compiled into the binary — they are: 173 lambda, 162
+dynamodb, 355 iam, 209 apigatewayv2, 49 sqs operations are all linked, because
+assigning a concrete client into an interface keeps its whole method set
+reachable. So "it physically isn't in the binary" is FALSE and must not be
+said. Layers 2 and 3 are what hold. Recording the refutation so nobody
+re-derives the wrong version of it later.
+
+**Operating rules for the Tartan run** (his account, his call, these are mine
+to honor): read-only identity if one can be had · `--dry-run` first ·
+**never `--with-values`** against a real account · nothing that adds, removes
+or modifies without asking him first (§12.8) · don't commit an imported
+project from a work account anywhere.
+
+### 12.5 Error taxonomy (every failure names its fix)
+
+| Cause | Message → fix |
+|---|---|
+| no credentials | `no AWS credentials for profile "X" — run: aws configure --profile X` |
+| SSO expired | `SSO session expired — run: aws sso login --profile X` |
+| AccessDenied | names the exact API + prints the minimal read-only policy |
+| empty region | `no Lambda functions in <region> — wrong region? try --region …` |
+| container image fn | `<fn> is a container-image function; pulse runs zip-based functions` |
+| unsupported runtime | `<fn> is <runtime> — pulse runs Node 18+ and Python 3.10+ today` |
+| bundle > 250 MB | refuse with the size and why |
+| uses Layers | imports but flags LOUDLY: dependencies in layers are not merged |
+| name collision (`--into`) | lists every colliding name + `--prefix` suggestion |
+| throttled | automatic backoff, then a plain-English retry message |
+| network/proxy | distinguishes DNS / TLS / proxy with the likely cause |
+
+### 12.6 Decisions taken (Geetansh, 2026-08-09)
+new project by default (additive `--into`, never replace) · refuse
+non-Node/Python runtimes · refuse > 250 MB bundles · placeholder every
+env value · opportunistic IAM introspection with silent fallback ·
+single region per import · no data seeding in v1 · ~30 MB binary is an
+acceptable cost.
+
+### 12.7 P0 RESULTS (measured 2026-08-09)
+Binary cost of the full SDK set (config/sts/lambda/apigatewayv2/sqs/
+dynamodb/iam), measured with the probe reachable from a real command
+(4,307 aws symbols linked — a `var _ =` hook gets dead-code-eliminated
+and under-reports):
+
+| build | today | with SDK | delta |
+|---|---|---|---|
+| stripped `-s -w` (what ships) | 14.4 MB | **18.6 MB** | +4.2 MB |
+| tar.gz download | 5.8 MB | **7.0 MB** | +1.2 MB |
+| unstripped dev build | 20.9 MB | 27.0 MB | +6.1 MB |
+
+Method validated: the stripped baseline gzips to 5.8 MB, exactly matching
+the real v0.1.0 release asset.
+
+> **CORRECTED at P4 (measured 2026-08-11). The estimate above was wrong and
+> the "20 MB" claim does NOT survive.** Constructing a client links far
+> less than *calling its operations* does: each operation drags in its own
+> serializer, deserializer and generated error handling. Real, measured by
+> building the finished command with clients removed one at a time:
+>
+> | linked clients | stripped | delta |
+> |---|---|---|
+> | v0.1.0 (no SDK) | 14.4 MB | — |
+> | config + sts (P2, shipped) | 17.4 MB | +3.0 |
+> | + lambda | 20.7 MB | +3.3 |
+> | + sqs + dynamodb | 23.7 MB | +3.0 |
+> | + apigatewayv2 | 26.3 MB | +2.6 |
+> | + iam (**what ships**) | **30.6 MB** | +4.3 |
+>
+> gzipped: **9.4 MB** (was 5.8 MB). Inside §12.6's "~30 MB is acceptable",
+> but every "one 20 MB binary" claim is now false and must change with the
+> v0.2.0 release. README's comparison row is already reworded to "one
+> binary, no daemon" — a claim that stays true as the SDK grows. **Still to
+> do (P7):** website `app/page.tsx` (compare table + the Docker FAQ answer)
+> and both `/vs` pages.
+>
+> If the size is ever worth trading back: dropping the IAM client saves
+> 4.3 MB and only weakens guess *evidence* (env-var and code signals
+> remain); dropping apigatewayv2 saves 2.6 MB but loses the route fallback
+> for wildcarded resource policies, which is a real capability. Both are
+> one-line changes in `NewDiscoverer`.
+
+`config.SupportedRuntimes` fixed: python3.13 added, python3.9 removed so
+config validation matches the documented+CI-tested floor (Python 3.10+,
+Node 18+). Docs updated. SDK deps were removed again by `go mod tidy`
+after measuring — P2 re-adds config+sts as it actually uses them.
+
+### 12.8 Test-account decisions (2026-08-09)
+- **Live target**: Geetansh will provide a real Lambda (ideally with an
+  SQS trigger + DynamoDB table) *after* the feature is built — so P0–P5
+  proceed against stubs and fixtures, and P6 waits for it.
+- **Credentials boundary — SETTLED 2026-08-12.** He provides credentials and
+  Claude may run the read-only calls itself. Standing rule he attached:
+  **confirm with him before anything that adds, removes or modifies** —
+  in AWS or in his repo. Import is read-only by construction, so the live
+  run needs no per-call confirmation; the rule covers everything around it
+  (creating a test function, deleting a project, changing account settings).
+  Until the credentials actually arrive, the old boundary still applies: no
+  session touches a real account. Everything through P5 was verified without
+  one (§12.4 P5.5), which is why this decision costs nothing in rework.
+
+### 12.9 Guessing policy + project mode — DECIDED (2026-08-09)
+
+**Why this is safe by construction:** import calls only List*/Get*/
+Describe*. No code path writes to AWS, so an import can never break
+production. The only risk being managed is a LOCAL project that differs
+from the cloud — which the rules below make visible and self-correcting.
+
+**The asymmetry that sets the policy:** including a resource the code
+doesn't use is free (an unused pulse.yaml entry); missing one the code
+does use breaks the first `pulse start`. So guessing leans generous.
+
+1. **Facts import silently** — triggers (http routes, sqs subscriptions)
+   are certain; no prompt, no friction.
+2. **Guesses are opt-OUT, with evidence shown.** Two tiers:
+   *strong* (IAM policy AND env var agree) → pre-checked;
+   *weak* (one fuzzy signal, e.g. code-scan only) → shown unchecked.
+   Enter accepts the defaults, so the common path is one keystroke.
+3. **Unsupported items are never silently dropped** — on screen AND in
+   `IMPORT-NOTES.md` committed with the project, so the gap lives in the
+   repo rather than in a terminal that scrolls away.
+4. **Runtime safety net (this is what actually delivers "no failures"):**
+   an undeclared table used at runtime produces a teaching error naming
+   the fix (`pulse add table orders`), mirroring the existing
+   auto-created-queue behavior. An imperfect guess becomes a 5-second
+   fix, not a debugging session.
+5. `--yes` takes exactly the pre-checked defaults (predictable in CI).
+
+**Project mode — option A only for v1:** `pulse import aws` always
+creates a NEW project directory. Run inside an existing project it
+refuses with a clear message (and suggests running elsewhere). The
+additive `--into .` merge from 12.3 is DEFERRED — not built until a user
+asks for it. Whole-project replacement is not offered at all.
+
+### 12.10 Resource selection — pick from reality, not from memory (2026-08-09)
+
+Geetansh's point: when unsure, ask the user. Refined — instead of asking
+them to TYPE names (typos, and we still wouldn't know the schema), the
+picker lists what actually exists in the account/region:
+
+- `dynamodb:ListTables` / `sqs:ListQueues` populate the list; our guesses
+  (12.9) arrive pre-checked with their evidence; everything else is one
+  space-bar away. Type-to-filter for accounts with many resources.
+- **Every selected item is then described exactly** — `DescribeTable`
+  yields the real pk/sk and types, `GetQueueAttributes` the real
+  visibility timeout + redrive/DLQ. So the local project mirrors
+  production field-for-field, not by inference.
+- Nothing is typed → nothing can be mistyped, and every name is real.
+
+**Escape hatch for cross-account/cross-region resources** (won't appear
+in the list): free-text entry stays, but pulse says plainly that it
+cannot describe the resource, asks for the partition key, and records in
+`IMPORT-NOTES.md` that this entry was hand-declared rather than read
+from AWS.
+
+Extra read permissions this needs (added to the printed policy):
+`dynamodb:ListTables`, `sqs:ListQueues`.
+
+---
+
+## 13. Where we are / what's left (board, updated 2026-08-12)
+
+One place to see the whole picture. Two tracks run in parallel: the **import
+epic** (§12, current focus, on branch `feat/import-aws`) and the **post-launch
+roadmap** (§11). `master` stays at the last released state and receives nothing
+until a feature is stable end to end.
+
+### Import epic — §12
+
+| Phase | State | Notes |
+|---|---|---|
+| P0 SDK spike | ✅ done | size measured; §12.7 correction: 30.6 MB, not 18.6 |
+| P1 `.env` in core | ✅ done | + 2 real bugs fixed |
+| P2 profile foundation | ✅ done | `pulse aws profiles/whoami`, full credential chain |
+| P3 mapper + discovery | ✅ done | SDK-free mapper, 5 read-only interfaces, all fakes |
+| P4 the CLI | ✅ done | atomic writer, pickers, preview, offline e2e; 3 bugs fixed |
+| P5 errors + docs | ✅ done | `--policy`, exact-action denials, GUIDE §3.13 |
+| P5.5 real-terminal acceptance | ✅ done | fake AWS + shipped binary; **6 bugs found and fixed** |
+| P5.6 UX polish | ✅ done | all 4: no-prompt --dry-run, auto-install, region probe, doctor notes |
+| **P6 live verification** | 🟡 R0+R1 GREEN, R2 in progress (§12.13–15) | R2 pre-flight already found the v1/v2 payload-format bug; needs a REST-API function to finish |
+| P7 website coupling | ⏳ after P6 | quickstart/FAQ//vs rows + **the 20 MB claim must change** |
+| P8 export | 🅿️ deferred | not scoped; "import first, then export" was the plan |
+
+Then: merge `feat/import-aws` into master with `--no-ff`, tag v0.2.0, bump
+`public/version.json` on the site (the update notifier reads it).
+
+### Post-launch roadmap — §11
+
+| Phase | State | Notes |
+|---|---|---|
+| L0 launch-week kit | ✅ mostly done | GIF, notifier, repo public, domain live; **testimonials still placeholders** |
+| L1 first-run hardening | 🟡 partly done | e2e + CI matrix + doctor fixes shipped; **still open:** Linux containers, fresh-machine drill, WSL2 smoke test, website runtime matrix |
+| L2 `pulse import` | 🟡 in progress | §12 IS L2, scoped up from SAM-template parsing to reading live AWS |
+| L3 service surface | ⬜ not started | demand-driven: S3 subset → EventBridge schedules → SNS |
+| L4 docs on getpulse.run | ⬜ not started | `/docs` from the GUIDE, per-feature pages, first blog post |
+| §10 Windows native | 🅿️ parked | WSL2 is the documented answer for now |
+
+### His side, outstanding
+- The **test Lambda + credentials** for P6 (say when — I'll ask).
+- **Testimonials** on the site: real quotes, or leave `SHOW_TESTIMONIALS=false`.
+- The PR for `feat/import-aws` (he's managing it) — note CI only runs on
+  master pushes and PRs, so the branch gets the matrix once a PR is open.
+- Heads-up, not his fault: the node e2e currently fails on a broken upstream
+  `@aws-sdk/client-dynamodb` publish (§12.4 P5.5). It will clear itself.

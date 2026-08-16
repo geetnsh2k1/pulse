@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -100,10 +101,11 @@ func (v *validator) functions() {
 		p := "functions." + name
 
 		if fn.Runtime == "" {
-			v.addf(p+".runtime", "required — one of: %s", strings.Join(SupportedRuntimes, ", "))
-		} else if !contains(SupportedRuntimes, fn.Runtime) {
-			v.addf(p+".runtime", "%q is not a supported runtime%s (supported: %s)",
-				fn.Runtime, didYouMean(fn.Runtime, SupportedRuntimes), strings.Join(SupportedRuntimes, ", "))
+			v.addf(p+".runtime", "required — %s, e.g. %s", RuntimeFloor, SupportedRuntimes[0])
+		} else if !SupportsRuntime(fn.Runtime) {
+			v.addf(p+".runtime", "%q is not a runtime pulse can run%s — %s (tested in CI: %s)",
+				fn.Runtime, DidYouMean(fn.Runtime, SupportedRuntimes), RuntimeFloor,
+				strings.Join(SupportedRuntimes, ", "))
 		}
 
 		family := RuntimeFamily(fn.Runtime)
@@ -125,6 +127,16 @@ func (v *validator) functions() {
 			dir := filepath.Join(c.Root, fn.CodeDir)
 			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 				v.addf(p+".codeDir", "directory %q not found in project", fn.CodeDir)
+			}
+		}
+
+		// AWS rejects reserved variables in function configuration; so do we,
+		// and for a sharper reason: AWS_ENDPOINT_URL is what points the SDK
+		// at the local façade. Silently ignoring the key would leave someone
+		// debugging why their override "did nothing".
+		for _, k := range sortedKeys(fn.Env) {
+			if ReservedEnvKeys[k] {
+				v.addf(p+".env."+k, "%q is reserved by the Lambda runtime and cannot be set (AWS rejects it too) — remove it; pulse sets it for you", k)
 			}
 		}
 
@@ -159,14 +171,14 @@ func (v *validator) triggers() {
 		}
 		if !contains(triggerTypes, t.Type) {
 			v.addf(p+".type", "%q is not a known trigger type%s (known: %s)",
-				t.Type, didYouMean(t.Type, triggerTypes), strings.Join(triggerTypes, ", "))
+				t.Type, DidYouMean(t.Type, triggerTypes), strings.Join(triggerTypes, ", "))
 			continue
 		}
 
 		if t.Function == "" {
 			v.addf(p+".function", "required")
 		} else if _, ok := c.Functions[t.Function]; !ok {
-			v.addf(p+".function", "unknown function %q%s", t.Function, didYouMean(t.Function, fnNames))
+			v.addf(p+".function", "unknown function %q%s", t.Function, DidYouMean(t.Function, fnNames))
 		}
 
 		switch t.Type {
@@ -195,7 +207,7 @@ func (v *validator) triggers() {
 			if t.Queue == "" {
 				v.addf(p+".queue", "required for sqs triggers")
 			} else if _, ok := c.Resources.Queues[t.Queue]; !ok {
-				v.addf(p+".queue", "unknown queue %q%s — declare it under resources.queues", t.Queue, didYouMean(t.Queue, keys(c.Resources.Queues)))
+				v.addf(p+".queue", "unknown queue %q%s — declare it under resources.queues", t.Queue, DidYouMean(t.Queue, keys(c.Resources.Queues)))
 			}
 			if t.BatchSize < 1 || t.BatchSize > 10000 {
 				v.addf(p+".batchSize", "%d is out of range [1, 10000]", t.BatchSize)
@@ -204,13 +216,13 @@ func (v *validator) triggers() {
 			if t.Topic == "" {
 				v.addf(p+".topic", "required for sns triggers")
 			} else if _, ok := c.Resources.Topics[t.Topic]; !ok {
-				v.addf(p+".topic", "unknown topic %q%s — declare it under resources.topics", t.Topic, didYouMean(t.Topic, keys(c.Resources.Topics)))
+				v.addf(p+".topic", "unknown topic %q%s — declare it under resources.topics", t.Topic, DidYouMean(t.Topic, keys(c.Resources.Topics)))
 			}
 		case "s3":
 			if t.Bucket == "" {
 				v.addf(p+".bucket", "required for s3 triggers")
 			} else if !contains(c.Resources.Buckets, t.Bucket) {
-				v.addf(p+".bucket", "unknown bucket %q%s — declare it under resources.buckets", t.Bucket, didYouMean(t.Bucket, c.Resources.Buckets))
+				v.addf(p+".bucket", "unknown bucket %q%s — declare it under resources.buckets", t.Bucket, DidYouMean(t.Bucket, c.Resources.Buckets))
 			}
 			for _, ev := range t.Events {
 				if !s3EventKinds[ev] {
@@ -221,7 +233,7 @@ func (v *validator) triggers() {
 			if t.Table == "" {
 				v.addf(p+".table", "required for dynamodb-stream triggers")
 			} else if tb, ok := c.Resources.Tables[t.Table]; !ok {
-				v.addf(p+".table", "unknown table %q%s — declare it under resources.tables", t.Table, didYouMean(t.Table, keys(c.Resources.Tables)))
+				v.addf(p+".table", "unknown table %q%s — declare it under resources.tables", t.Table, DidYouMean(t.Table, keys(c.Resources.Tables)))
 			} else if !tb.Streams {
 				v.addf(p+".table", "table %q has streams disabled — set resources.tables.%s.streams: true", t.Table, t.Table)
 			}
@@ -271,7 +283,7 @@ func (v *validator) resources() {
 			if q.DLQ == name {
 				v.addf(p+".dlq", "queue cannot be its own dead-letter queue")
 			} else if _, ok := c.Resources.Queues[q.DLQ]; !ok {
-				v.addf(p+".dlq", "unknown queue %q%s — declare it under resources.queues", q.DLQ, didYouMean(q.DLQ, keys(c.Resources.Queues)))
+				v.addf(p+".dlq", "unknown queue %q%s — declare it under resources.queues", q.DLQ, DidYouMean(q.DLQ, keys(c.Resources.Queues)))
 			}
 			if q.MaxReceiveCount < 1 {
 				v.addf(p+".maxReceiveCount", "must be ≥ 1 when a dlq is set")
@@ -287,7 +299,7 @@ func (v *validator) resources() {
 		p := "resources.topics." + name
 		for _, sub := range tp.Subscribers {
 			if _, ok := c.Functions[sub]; !ok {
-				v.addf(p+".subscribers", "unknown function %q%s", sub, didYouMean(sub, fnNames))
+				v.addf(p+".subscribers", "unknown function %q%s", sub, DidYouMean(sub, fnNames))
 			}
 		}
 	}
@@ -318,6 +330,16 @@ func validHTTPPath(p string) string {
 		}
 	}
 	return ""
+}
+
+// sortedKeys keeps validation messages deterministic across runs.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func contains(list []string, s string) bool {
