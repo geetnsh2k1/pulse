@@ -6,6 +6,7 @@ _HANDLER, LAMBDA_TASK_ROOT, AWS_LAMBDA_RUNTIME_API.
 
 import importlib
 import json
+import logging
 import os
 import signal
 import sys
@@ -24,6 +25,26 @@ WORKER_ID = os.environ.get("PULSE_WORKER_ID", "w0")
 HEADERS = {"X-Pulse-Worker-Id": WORKER_ID}
 
 sys.path.insert(0, os.environ.get("LAMBDA_TASK_ROOT", "."))
+
+# AWS's Python runtime installs a handler on the root logger. Without one,
+# Python falls back to logging.lastResort, which emits WARNING and above and
+# silently drops everything below — so `logger.setLevel(logging.INFO)` followed
+# by `logger.info(...)`, the standard Lambda idiom, produces nothing locally
+# while working fine in CloudWatch. Install the handler AWS would have, before
+# the handler module is imported and can log at import time.
+#
+# Installing it here, before the handler is imported, also reproduces the
+# well-known Lambda gotcha faithfully: a basicConfig() call in handler code is
+# a no-op, because the root logger already has a handler. Matching AWS matters
+# more than being convenient — a log line that appears locally and vanishes in
+# production is worse than one that behaves the same in both.
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format="[%(levelname)s]\t%(asctime)s.%(msecs)03dZ\t%(name)s\t%(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    force=True,
+)
 
 
 def _post(url, body):

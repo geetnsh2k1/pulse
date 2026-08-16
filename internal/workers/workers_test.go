@@ -314,3 +314,42 @@ export const handler = async () => {
 		t.Errorf("wall clock %v suggests serialized execution", wall)
 	}
 }
+
+// AWS's Python runtime puts a handler on the root logger; without one Python
+// uses logging.lastResort, which drops anything below WARNING. The result was
+// that `logger.setLevel(logging.INFO)` + `logger.info(...)` — the idiom in
+// almost every Lambda ever written — printed nothing locally while working in
+// CloudWatch, which makes an imported function look silent.
+func TestPythonLoggingModuleReachesTheLogs(t *testing.T) {
+	requireBinary(t, "python3")
+	m := newTestManager(t, "python3.12", "handler.handler", "handler.py", `
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def handler(event, context):
+    logger.debug("debug-line")
+    logger.info("info-line")
+    logger.warning("warn-line")
+    logger.error("error-line")
+    return {"ok": True}
+`, 10)
+
+	res := invokeJSON(t, m, `{}`)
+	if res.Status != "success" {
+		t.Fatalf("status = %s, payload = %s", res.Status, res.Payload)
+	}
+	joined := ""
+	for _, l := range res.Logs {
+		joined += l.Text + "\n"
+	}
+	for _, want := range []string{"info-line", "warn-line", "error-line"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("%q missing from the logs:\n%s", want, joined)
+		}
+	}
+	// INFO is the floor AWS uses too: debug stays off unless asked for.
+	if strings.Contains(joined, "debug-line") {
+		t.Errorf("debug should be below the default level:\n%s", joined)
+	}
+}
