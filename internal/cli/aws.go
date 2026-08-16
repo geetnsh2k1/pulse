@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/geetnsh2k1/pulse/internal/awscfg"
+	"github.com/geetnsh2k1/pulse/internal/importer"
 	"github.com/geetnsh2k1/pulse/internal/ui"
 )
 
@@ -123,7 +125,110 @@ func addAWSFlags(c *cobra.Command) {
 
 func init() {
 	addAWSFlags(awsWhoamiCmd)
+	addAWSFlags(awsLayersCmd)
+	awsLayersCmd.ValidArgsFunction = cobra.NoFileCompletions
 	awsProfilesCmd.ValidArgsFunction = cobra.NoFileCompletions
 	awsWhoamiCmd.ValidArgsFunction = cobra.NoFileCompletions
-	awsCmd.AddCommand(awsProfilesCmd, awsWhoamiCmd)
+	awsCmd.AddCommand(awsProfilesCmd, awsWhoamiCmd, awsLayersCmd)
+}
+
+var awsLayersCmd = &cobra.Command{
+	Use:   "layers",
+	Short: "Download the Lambda layers this project's functions need",
+	Long: `Fetches the layers recorded in pulse.yaml and unpacks them locally.
+
+Layer contents are gitignored — they're vendored bytes, not your source — so
+a fresh clone of an imported project has the ARNs but not the packages, and
+its functions fail on their first import. This downloads them again.
+
+Read-only: lambda:GetLayerVersion plus the presigned download it hands back.
+Nothing in your AWS account is created, changed or deleted.
+
+The region comes from each layer's own ARN, so layers shared from another
+region resolve correctly without a --region flag.`,
+	Args:    cobra.NoArgs,
+	Example: `  pulse aws layers\n  pulse aws layers --profile prod`,
+	RunE:    runAWSLayers,
+}
+
+func runAWSLayers(cmd *cobra.Command, _ []string) error {
+	cfg, err := loadProject()
+	if err != nil {
+		return err
+	}
+
+	// Re-fetching is idempotent and cheap to reason about, so this deliberately
+	// does not skip functions whose layers are already present: "my layer is
+	// stale" is a real state, and a command that refuses to act on it is worse
+	// than one that spends a few seconds.
+	var work []missingLayers
+	for _, name := range sortedFunctionNames(cfg) {
+		fn := cfg.Functions[name]
+		if len(fn.Layers) > 0 {
+			work = append(work, missingLayers{Function: name, CodeDir: fn.CodeDir, ARNs: fn.Layers})
+		}
+	}
+	if len(work) == 0 {
+		fmt.Printf("%s\n", ui.OK("✓ no function in this project declares any layers"))
+		return nil
+	}
+
+	opts, err := resolveAWSTarget(cmd, awsProfile, awsRegion)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	id, err := awscfg.Whoami(ctx, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s %s\n", ui.AccentBold("⚡ pulse aws layers"), ui.Dim("— read-only"))
+	fmt.Printf("  %s  %s\n\n", ui.Dim("account"), ui.Bold(id.Account))
+
+	awsCfg, err := awscfg.Load(ctx, opts)
+	if err != nil {
+		return err
+	}
+	disco := importer.NewDiscoverer(awsCfg, id.Region)
+
+	var fetched, failed int
+	for _, w := range work {
+		layers := make([]importer.Layer, 0, len(w.ARNs))
+		for _, arn := range w.ARNs {
+			layers = append(layers, importer.Layer{ARN: arn, Name: importer.LayerName(arn)})
+		}
+
+		sp := ui.StartSpinner(fmt.Sprintf("resolving %s for %s", layerWord(len(layers)), w.Function))
+		layers = disco.ResolveLayers(ctx, layers)
+		sp.Success()
+
+		dest := filepath.Join(cfg.Root, w.CodeDir, importer.LayerDir)
+		for _, l := range layers {
+			if l.Unreadable != "" {
+				fmt.Printf("  %s %s — %s\n", ui.Warn("✱"), ui.Bold(l.Name), ui.Dim(l.Unreadable))
+				failed++
+				continue
+			}
+			sp := ui.StartSpinner(fmt.Sprintf("downloading %s (%s)", l.Name, humanSize(l.CodeSize)))
+			written, err := importer.FetchLayers(ctx, nil, []importer.Layer{l}, dest)
+			if err != nil {
+				sp.Fail("couldn't download " + l.Name)
+				return err
+			}
+			sp.Success()
+			fmt.Printf("  %s %s → %s %s\n", ui.OK("✓"), ui.Bold(l.Name),
+				ui.Dim(filepath.Join(w.CodeDir, importer.LayerDir)),
+				ui.Dim(fmt.Sprintf("(%d files)", len(written))))
+			fetched++
+		}
+	}
+
+	fmt.Println()
+	if failed > 0 {
+		fmt.Printf("%s\n", ui.Warn(fmt.Sprintf("✱ %d layer(s) unreadable — the functions using them will still fail", failed)))
+		fmt.Printf("  %s\n", ui.Hint("see what access is needed: `pulse import aws --policy`"))
+		return nil
+	}
+	fmt.Printf("%s\n", ui.OK(fmt.Sprintf("✓ %d layer(s) ready — `pulse start`", fetched)))
+	return nil
 }

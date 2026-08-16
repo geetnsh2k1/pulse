@@ -37,6 +37,13 @@ func (p *Plan) ToConfig() *config.Config {
 	}
 
 	for _, f := range p.Functions {
+		// Every layer is recorded, including ones pulse could not download:
+		// the ARN is exactly what a later `pulse aws layers` needs, and a
+		// layer that was denied today may well be readable tomorrow.
+		var layers []string
+		for _, l := range f.Layers {
+			layers = append(layers, l.ARN)
+		}
 		cfg.Functions[f.Name] = &config.Function{
 			Name:    f.Name,
 			Runtime: f.Runtime,
@@ -44,6 +51,7 @@ func (p *Plan) ToConfig() *config.Config {
 			CodeDir: f.CodeDir,
 			Timeout: f.TimeoutSec,
 			Memory:  f.MemoryMB,
+			Layers:  layers,
 		}
 	}
 

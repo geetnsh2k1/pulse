@@ -44,6 +44,12 @@ func runStart(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Before booting anything: a function whose layers were never fetched into
+	// this checkout will die on its first import with a message that names a
+	// package, not the real cause.
+	if err := requireLayers(cfg); err != nil {
+		return err
+	}
 	if flagPort > 0 {
 		cfg.API.Port = flagPort
 	}

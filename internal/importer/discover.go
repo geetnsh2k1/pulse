@@ -296,6 +296,14 @@ func (d *Discoverer) Discover(ctx context.Context, name string) (*Discovery, err
 }
 
 // layerNameVersion splits arn:aws:lambda:region:acct:layer:NAME:VERSION.
+// LayerName is the human name inside a layer ARN, for callers that hold an
+// ARN from pulse.yaml and nothing else. Falls back to the ARN's last segment
+// so a malformed ARN still prints as something recognisable.
+func LayerName(arn string) string {
+	name, _ := layerNameVersion(arn)
+	return name
+}
+
 func layerNameVersion(arn string) (name, version string) {
 	parts := strings.Split(arn, ":")
 	if len(parts) < 8 {
@@ -309,19 +317,29 @@ func layerNameVersion(arn string) (name, version string) {
 // dependencies living in those layers will be missing locally, and which
 // permission would fix it.
 func (d *Discoverer) resolveLayers(ctx context.Context, fn *Function) {
-	for i := range fn.Layers {
-		out, err := d.Lambda.GetLayerVersionByArn(ctx, &lambda.GetLayerVersionByArnInput{
-			Arn: aws.String(fn.Layers[i].ARN),
+	fn.Layers = d.ResolveLayers(ctx, fn.Layers)
+}
+
+// ResolveLayers fills in each layer's download URL, or the reason it could not
+// be read. It never fails the caller: a layer pulse cannot fetch is a degraded
+// import, not a broken one, and the reason travels with the layer so whoever
+// reports it can say something true about that specific layer.
+func (d *Discoverer) ResolveLayers(ctx context.Context, layers []Layer) []Layer {
+	out := append([]Layer(nil), layers...)
+	for i := range out {
+		res, err := d.Lambda.GetLayerVersionByArn(ctx, &lambda.GetLayerVersionByArnInput{
+			Arn: aws.String(out[i].ARN),
 		})
 		if err != nil {
-			fn.Layers[i].Unreadable = whyUnreadable(err)
+			out[i].Unreadable = whyUnreadable(err)
 			continue
 		}
-		if out.Content != nil {
-			fn.Layers[i].CodeURL = aws.ToString(out.Content.Location)
-			fn.Layers[i].CodeSize = out.Content.CodeSize
+		if res.Content != nil {
+			out[i].CodeURL = aws.ToString(res.Content.Location)
+			out[i].CodeSize = res.Content.CodeSize
 		}
 	}
+	return out
 }
 
 func (d *Discoverer) getFunction(ctx context.Context, name string) (Function, error) {

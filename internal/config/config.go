@@ -109,6 +109,12 @@ type Function struct {
 	Timeout int               `yaml:"timeout" json:"timeout"` // seconds; enforced at invoke
 	Memory  int               `yaml:"memory" json:"memory"`   // MB; env/context parity in MVP
 	Env     map[string]string `yaml:"env" json:"env,omitempty"`
+	// Layers records the Lambda layer ARNs this function was deployed with.
+	// The unpacked bytes live in <codeDir>/_layers, which is gitignored, so
+	// this is what survives a clone — without it a checkout has no way to
+	// know which layers to re-fetch, and the function fails on an import
+	// with nothing to point at.
+	Layers []string `yaml:"layers,omitempty" json:"layers,omitempty"`
 }
 
 // Trigger wires an event source to a function. Only the fields belonging to

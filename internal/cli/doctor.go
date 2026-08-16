@@ -379,6 +379,12 @@ func depChecks(cfg *config.Config) []check {
 				fix: "`npm install` (functions needing the AWS SDK will fail until then)"})
 		}
 	}
+	for _, m := range findMissingLayers(cfg) {
+		out = append(out, check{ok: false, warn: true,
+			line: fmt.Sprintf("%s declares %s with nothing unpacked (gitignored, so a clone never has them)",
+				m.Function, layerWord(len(m.ARNs))),
+			fix: "`pulse aws layers`"})
+	}
 	if _, err := os.Stat(filepath.Join(cfg.Root, "requirements.txt")); err == nil {
 		if _, err := os.Stat(filepath.Join(cfg.Root, ".venv", "bin", "python")); err == nil {
 			out = append(out, check{ok: true, line: ".venv present (pulse finds it automatically)"})

@@ -200,24 +200,12 @@ func (p *Plan) writeInto(ctx context.Context, root string, o WriteOptions) ([]st
 		// them at /opt and puts their language directories on the search path;
 		// pulse unpacks them beside the function and the worker does the same,
 		// so an imported function can import what it imports in production.
-		for _, l := range f.Layers {
-			if l.CodeURL == "" {
-				continue // unreadable — the plan already says so, loudly
-			}
-			layerPkg, err := FetchCode(ctx, o.client(), l.Name, l.CodeURL)
-			if err != nil {
-				return nil, fmt.Errorf("fetching layer %s: %w", l.Name, err)
-			}
-			// Layers merge into one tree in ARN order, exactly as AWS overlays
-			// them onto /opt, so a later layer wins the same way it would there.
-			written, err := layerPkg.extractTo(filepath.Join(root, f.CodeDir, LayerDir))
-			layerPkg.Close()
-			if err != nil {
-				return nil, fmt.Errorf("unpacking layer %s: %w", l.Name, err)
-			}
-			for _, n := range written {
-				files = append(files, filepath.Join(f.CodeDir, LayerDir, n))
-			}
+		written, err := FetchLayers(ctx, o.client(), f.Layers, filepath.Join(root, f.CodeDir, LayerDir))
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range written {
+			files = append(files, filepath.Join(f.CodeDir, LayerDir, n))
 		}
 	}
 	return files, nil
@@ -232,9 +220,14 @@ func (o WriteOptions) packageFor(fn string) *CodePackage {
 	return nil
 }
 
-func (o WriteOptions) client() *http.Client {
-	if o.HTTPClient != nil {
-		return o.HTTPClient
+func (o WriteOptions) client() *http.Client { return downloadClient(o.HTTPClient) }
+
+// downloadClient supplies the default when a caller has no opinion. FetchCode
+// and FetchLayers are exported, so nil is a client they will be handed sooner
+// or later; defaulting beats a nil dereference three frames down.
+func downloadClient(c *http.Client) *http.Client {
+	if c != nil {
+		return c
 	}
 	return &http.Client{Timeout: 5 * time.Minute} // bundles can be large
 }
@@ -268,6 +261,14 @@ func (p *Plan) ConfigYAML() string {
 		fmt.Fprintf(&b, "    memory: %d\n", fn.Memory)
 		if n := envCount(f); n > 0 {
 			fmt.Fprintf(&b, "    # %s in .env\n", plural(n, "variable", "variables"))
+		}
+		// Recorded even though the bytes are gitignored — this is how a
+		// fresh clone learns what `pulse aws layers` has to fetch.
+		if len(f.Layers) > 0 {
+			b.WriteString("    layers:\n")
+			for _, l := range f.Layers {
+				fmt.Fprintf(&b, "      - %s\n", yamlScalar(l.ARN))
+			}
 		}
 	}
 
@@ -376,6 +377,31 @@ func yamlKey(s string) string {
 	return yamlScalar(s)
 }
 
+// FetchLayers downloads every readable layer and unpacks them all into dir.
+// Layers merge into one tree in ARN order, exactly as AWS overlays them onto
+// /opt, so a later layer wins the same way it would in production. Layers with
+// no CodeURL are skipped — they are unreadable, and whoever resolved them has
+// already said why. Returns the paths written, relative to dir.
+func FetchLayers(ctx context.Context, client *http.Client, layers []Layer, dir string) ([]string, error) {
+	var files []string
+	for _, l := range layers {
+		if l.CodeURL == "" {
+			continue
+		}
+		pkg, err := FetchCode(ctx, client, l.Name, l.CodeURL)
+		if err != nil {
+			return nil, fmt.Errorf("fetching layer %s: %w", l.Name, err)
+		}
+		written, err := pkg.extractTo(dir)
+		pkg.Close()
+		if err != nil {
+			return nil, fmt.Errorf("unpacking layer %s: %w", l.Name, err)
+		}
+		files = append(files, written...)
+	}
+	return files, nil
+}
+
 // LayerDir is where an imported function's layers are unpacked, relative to
 // its code directory. The workers package looks for the same name — that
 // convention is the whole wiring, so neither side needs a config field.
@@ -414,6 +440,7 @@ type CodePackage struct {
 // FetchCode downloads a deployment package to a temp file. The caller owns
 // it and must Close it.
 func FetchCode(ctx context.Context, client *http.Client, fn, url string) (*CodePackage, error) {
+	client = downloadClient(client)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

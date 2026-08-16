@@ -133,6 +133,12 @@ the search paths AWS mounts it on (`/opt/python`, `/opt/nodejs/node_modules`),
 so the code runs as deployed. Reading a layer needs `lambda:GetLayerVersion`;
 without it the import still succeeds and says which layer it couldn't read.
 
+The unpacked bytes are gitignored — they're vendored, not your source — but
+the layer ARNs are recorded in `pulse.yaml`, so a fresh clone knows exactly
+what it's missing. `pulse start` there stops with the ARNs and one command,
+`pulse aws layers`, instead of a `ModuleNotFoundError` for a package nobody
+ever installed.
+
 It finishes the job, too: dependencies are installed the way `pulse init`
 installs them, so the next step is `pulse start`.
 

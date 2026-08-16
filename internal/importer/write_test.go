@@ -571,3 +571,54 @@ func TestUnreadableLayerIsReportedNotSkipped(t *testing.T) {
 		t.Error("nothing should have been unpacked for an unreadable layer")
 	}
 }
+
+// The unpacked layer is gitignored, so the ARN in pulse.yaml is the only
+// thing that survives a clone — without it a checkout cannot know what to
+// re-fetch and the function just fails on an import.
+func TestWriteRecordsLayerARNsInConfig(t *testing.T) {
+	layerURL := serveZip(t, zipOf(t, map[string]string{"python/pymongo/__init__.py": "X = 1\n"}))
+	p := writePlanWith(t, serveZip(t, zipOf(t, map[string]string{"handler.py": "x = 1\n"})),
+		Layer{ARN: "arn:aws:lambda:ap-south-1:1:layer:deps:9", Name: "deps", CodeURL: layerURL},
+		Layer{ARN: "arn:aws:lambda:ap-south-1:1:layer:denied:2", Name: "denied",
+			Unreadable: "no permission for lambda:GetLayerVersion"},
+	)
+
+	dest := filepath.Join(t.TempDir(), "shop")
+	if _, err := p.Write(context.Background(), WriteOptions{Dest: dest}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	cfg, err := config.Load(filepath.Join(dest, config.FileName))
+	if err != nil {
+		t.Fatalf("the written project does not load: %v", err)
+	}
+	got := cfg.Functions["createOrder"].Layers
+	// Both are recorded, including the one that was denied: the ARN is exactly
+	// what a retry needs, and today's denial may be tomorrow's permission.
+	want := []string{
+		"arn:aws:lambda:ap-south-1:1:layer:deps:9",
+		"arn:aws:lambda:ap-south-1:1:layer:denied:2",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("layers = %v, want %v", got, want)
+	}
+}
+
+// FetchCode and FetchLayers are exported, so a nil client will be passed
+// eventually — it should download, not panic three frames down.
+func TestFetchToleratesANilClient(t *testing.T) {
+	url := serveZip(t, zipOf(t, map[string]string{"python/pkg/__init__.py": "X = 1\n"}))
+	dir := t.TempDir()
+
+	written, err := FetchLayers(context.Background(), nil,
+		[]Layer{{ARN: "arn:…:layer:deps:1", Name: "deps", CodeURL: url}}, dir)
+	if err != nil {
+		t.Fatalf("a nil client should default, got: %v", err)
+	}
+	if len(written) == 0 {
+		t.Error("nothing was unpacked")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "python", "pkg", "__init__.py")); err != nil {
+		t.Error(err)
+	}
+}
